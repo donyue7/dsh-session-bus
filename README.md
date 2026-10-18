@@ -1,5 +1,6 @@
 # dsh-session-bus
 
+[![npm](https://img.shields.io/npm/v/dsh-session-bus.svg)](https://www.npmjs.com/package/dsh-session-bus)
 [![test](https://github.com/donyue7/dsh-session-bus/actions/workflows/test.yml/badge.svg)](https://github.com/donyue7/dsh-session-bus/actions/workflows/test.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -23,6 +24,27 @@ DSH 会话总线插件：让**同一个工作区**或**不同工作区**的两�
 - **可回复**：被推送方看到 `[session-bus v1] from=<会话id>`，用 `bus_send` 把结果发回源会话，源会话同样被唤醒。
 
 ## 安装
+
+### 从 npm 安装（推荐）
+
+包已发布在 npm：**https://www.npmjs.com/package/dsh-session-bus**（`latest = 0.3.1`）。
+
+```powershell
+cd <profile>                 # 例如 C:\Users\<你>\.dsh-harness-next\profiles\desktop
+npm i dsh-session-bus        # 装进 profile 自己的 node_modules
+```
+
+然后在同一目录的 `package.json` 里把包名加进 `dsh.profile.bundles`（`npm i` 已自动写入 `dependencies`）：
+
+```json
+{
+  "dsh": { "profile": { "bundles": ["dsh-session-bus"] } }
+}
+```
+
+重启 DSH 后插件会出现在「设置 → 插件」页，`bus_*` 工具即可使用。
+
+### 从源码安装
 
 插件源码在本目录，安装脚本把它复制进 DSH profile 并在该 profile 的 `cordis.patch.yml`
 里插入一行挂载条目（用标记注释包裹，可完整卸载）：
