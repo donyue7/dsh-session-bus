@@ -11,6 +11,15 @@
     "messaging"
   ],
   "license": "MIT",
+  "author": "donyue7",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/donyue7/dsh-session-bus.git"
+  },
+  "bugs": {
+    "url": "https://github.com/donyue7/dsh-session-bus/issues"
+  },
+  "homepage": "https://github.com/donyue7/dsh-session-bus#readme",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
