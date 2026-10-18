@@ -1,0 +1,41 @@
+{
+  "name": "dsh-session-bus",
+  "version": "0.3.1",
+  "description": "会话之间互相推送消息并自动唤醒对方：同一工作区或跨工作区都能直接派活，省掉手动暂停会话、复制、切过去粘贴的来回操作。",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "plugin",
+    "session",
+    "messaging"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/find.test.mjs test/toolkit.test.mjs test/threads.test.mjs test/config.test.mjs test/plugin.test.mjs",
+    "install:profile": "pwsh -NoProfile -File scripts/install.ps1",
+    "uninstall:profile": "pwsh -NoProfile -File scripts/install.ps1 -Uninstall"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+# dsh-session-bus bundle patch
+#
+# This is the bundle layer: `dsh.bundle.patch` in package.json points here, so
+# an install through the plugin manager (or `dsh plugin add`) mounts the Host
+# half by appending this row to the composed entry list.
+#
+# The row carries no config on purpose: every default is already the value the
+# plugin ships with, so an upgrade never silently changes behaviour. Override
+# anything you need in the profile's own cordis.patch.yml on the same `id`.
+- insert:
+    - id: session-bus
+      name: 'dsh-session-bus'
