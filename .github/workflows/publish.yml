@@ -1,0 +1,44 @@
+name: publish
+
+# npm trusted publishing (OIDC). No npm token exists in this repository or in
+# GitHub secrets: the workflow asks GitHub for an OIDC token and npm verifies
+# that token against the trusted publisher configured for dsh-session-bus.
+#
+# Configure on npmjs.com (package Settings -> Trusted publishing):
+#   Provider: GitHub Actions
+#   Organization or user: donyue7
+#   Repository: dsh-session-bus
+#   Workflow filename: publish.yml
+#   Environment: (leave empty)
+#
+# Then publish a GitHub Release: the release event below builds, tests and
+# publishes the version from package.json to npm, with provenance attached.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write # required: lets npm verify the GitHub OIDC identity
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # npm CLI 11.5.1+ is required for trusted publishing.
+      - name: Use a trusted-publishing capable npm
+        run: npm install -g npm@^11.5.1
+
+      - name: Run the unit suite
+        run: npm test
+
+      - name: Publish to npm via OIDC (no token, with provenance)
+        run: npm publish --access public --provenance

@@ -1,6 +1,7 @@
 # dsh-session-bus
 
 [![npm](https://img.shields.io/npm/v/dsh-session-bus.svg)](https://www.npmjs.com/package/dsh-session-bus)
+[![test](https://github.com/donyue7/dsh-session-bus/actions/workflows/test.yml/badge.svg)](https://github.com/donyue7/dsh-session-bus/actions/workflows/test.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 DSH 会话总线插件：让**同一个工作区**或**不同工作区**的两个会话互相推送消息，并自动唤醒被推送方继续工作 —— 不需要用户手动暂停会话、复制、粘贴。
@@ -26,7 +27,7 @@ DSH 会话总线插件：让**同一个工作区**或**不同工作区**的两�
 
 ### 从 npm 安装（推荐）
 
-包已发布在 npm：**https://www.npmjs.com/package/dsh-session-bus**（`latest = 0.3.1`）。
+包已发布在 npm：**https://www.npmjs.com/package/dsh-session-bus**（`latest` 版本见顶部徽章）。
 
 ```powershell
 cd <profile>                 # 例如 C:\Users\<你>\.dsh-harness-next\profiles\desktop
