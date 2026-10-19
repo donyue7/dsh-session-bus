@@ -61,7 +61,7 @@ function createHost(options = {}) {
 }
 
 /** Build a bus over a Host double. */
-function createBus(host, config = {}) {
+function createBus(host, config = {}, logger) {
   let counter = 0;
   return new SessionBus({
     ctx: host,
@@ -69,8 +69,31 @@ function createBus(host, config = {}) {
     persist: false,
     clock: () => CLOCK,
     idFactory: () => `msg${String(++counter).padStart(9, '0')}`,
+    ...logger === undefined ? {} : { logger },
   });
 }
+
+/**
+ * Teach a Host double to create Sessions and record renamed titles.
+ * @param {object} host - host built by {@link createHost}.
+ * @returns {object} the same host, extended.
+ */
+function withSpawn(host) {
+  host.created = [];
+  host.renames = [];
+  host.sessionController.create = async (request) => {
+    host.created.push(request);
+    const sessionId = request.sessionId ?? 'session-spawn001';
+    host.sessions.push({ sessionId, cwd: request.cwd ?? 'C:\\work\\a', updatedAt: CLOCK, running: false, agentAvailable: true });
+    return { sessionId };
+  };
+  host.sessionController.rename = async (request) => {
+    host.renames.push(request);
+    return { title: request.title, seq: 1 };
+  };
+  return host;
+}
+
 
 test('the default presentation delivers an agent-message, not a user prompt', async () => {
   const host = createHost();
@@ -191,4 +214,65 @@ test('a failed Agent resolution is reported as delivery_failed', async () => {
     /\[delivery_failed\]/,
   );
   assert.equal(host.inbox.nextTurn.length, 0);
+});
+
+test('a notice-mode spawn names the new Session from the first line of its message', async () => {
+  const host = withSpawn(createHost());
+  const bus = createBus(host);
+  const receipt = await bus.spawn({
+    message: '## 修好登录\n先看 test/login.test.mjs，然后跑一遍全部用例。',
+    workspace: 'ws-a',
+    sender: senderA,
+  });
+
+  assert.equal(receipt.created, true);
+  assert.equal(receipt.delivered, true);
+  assert.equal(host.inbox.nextTurn.length, 1);
+  // The rename is the only way a notice-mode spawn gets a usable title: DSH's
+  // automatic title ignores messages whose source is not `user`.
+  assert.deepEqual(host.renames, [{ sessionId: receipt.sessionId, title: '修好登录' }]);
+});
+
+test('a bubble-mode spawn keeps the automatic first-prompt title', async () => {
+  const host = withSpawn(createHost());
+  const bus = createBus(host, { inboundPresentation: 'bubble' });
+  const receipt = await bus.spawn({ message: 'start here', workspace: 'ws-a', sender: senderA });
+
+  assert.equal(receipt.delivered, true);
+  assert.equal(host.prompts.length, 1);
+  assert.deepEqual(host.renames, []);
+});
+
+test('a re-adopted spawn keeps the first title and skips the rename', async () => {
+  const host = withSpawn(createHost());
+  // A retried spawn must first find no Session under its derived id.
+  host.sessionController.inspect = async () => {
+    throw new Error('session/not-found');
+  };
+  const bus = createBus(host);
+  const first = await bus.spawn({ message: '## 第一次标题', workspace: 'ws-a', sender: senderA, spawnKey: 'job-1' });
+  assert.equal(first.created, true);
+  assert.equal(host.renames.length, 1);
+
+  // The retry sees the Session the first attempt created.
+  host.sessionController.inspect = async () => ({ meta: { id: first.sessionId }, inheritedEventCount: 0, events: [] });
+  const again = await bus.spawn({ message: '## 第二次标题', workspace: 'ws-a', sender: senderA, spawnKey: 'job-1' });
+  assert.equal(again.created, false);
+  assert.equal(again.sessionId, first.sessionId);
+  assert.equal(host.renames.length, 1);
+});
+
+test('a title service that refuses leaves the spawn successful', async () => {
+  const host = withSpawn(createHost());
+  host.sessionController.rename = async () => {
+    throw new Error('gateway/internal: renaming is unavailable');
+  };
+  const warnings = [];
+  const bus = createBus(host, {}, { warn: (line) => warnings.push(line) });
+  const receipt = await bus.spawn({ message: '## 标题', workspace: 'ws-a', sender: senderA });
+
+  assert.equal(receipt.delivered, true);
+  assert.equal(receipt.created, true);
+  assert.equal(host.inbox.nextTurn.length, 1);
+  assert.match(warnings.join('\n'), /spawned "session-spawn001" without a title/);
 });

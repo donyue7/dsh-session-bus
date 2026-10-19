@@ -166,6 +166,10 @@ DSH 前端按消息的 `source.kind` 决定一条 `user` 角色消息怎么画�
 
 > 兼容性：宿主没有 `resolveAgent`/Agent API（很旧或嵌入式宿主）时自动回退到 `bubble` 路径，投递不受影响。
 
+> 新会话标题：notice 路径的首条消息来源不是 `user`，DSH 的自动标题不会采用它，因此 `bus_spawn`
+> 会用首条消息的第一行（去掉 `#`/`>` 等 Markdown 前缀，最多 60 个字符）给新会话命名；
+> 重试命中的旧会话不会改名，`bubble` 路径仍沿用 DSH 的自动标题。
+
 ### 权限：为什么推送会把目标会话提到调用方的等级
 
 DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh` 子进程起不来
@@ -313,7 +317,7 @@ node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/
 
 （Node 24 下 `node --test test/` 会因目录解析报 `MODULE_NOT_FOUND`，所以逐个列出文件。）
 
-105 个用例，全部不依赖 DSH 运行时：
+109 个用例，全部不依赖 DSH 运行时：
 
 - `test/envelope.test.mjs` —— 包头渲染/解析、多行正文、恶意输入。
 - `test/resolve.test.mjs` —— 目标寻址的每一级、歧义拒绝、工作区匹配。
@@ -336,7 +340,8 @@ node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/
 - `test/presentation.test.mjs` —— v0.4 的呈现层：默认用 Agent API 投递 `agent-message`（不碰 prompt RPC）、
   queue/steer 分别落到收件箱 `nextTurn`/`nextStep`、消息深冻结与 source 字段（sender/thread/hop/messageId）、
   按日志与收件箱查重幂等、`bubble` 配置回退旧路径、没有 Agent API 的宿主自动回退、
-  无 Session store 时只跳过 flush、Agent 解析失败报 `delivery_failed`。
+  无 Session store 时只跳过 flush、Agent 解析失败报 `delivery_failed`；以及 notice 模式下 `bus_spawn`
+  用首行给新会话命名、重试命中的旧会话不改名、标题服务拒绝也不影响投递。
 
 ### 工具结果为什么由 schema 决定
 
