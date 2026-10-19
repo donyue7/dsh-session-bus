@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-bus",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "会话之间互相推送消息并自动唤醒对方：同一工作区或跨工作区都能直接派活，省掉手动暂停会话、复制、切过去粘贴的来回操作。",
   "keywords": [
     "deepseek-harness",
@@ -38,7 +38,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/find.test.mjs test/toolkit.test.mjs test/threads.test.mjs test/config.test.mjs test/plugin.test.mjs",
+    "test": "node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/find.test.mjs test/toolkit.test.mjs test/threads.test.mjs test/config.test.mjs test/plugin.test.mjs test/presentation.test.mjs",
     "install:profile": "pwsh -NoProfile -File scripts/install.ps1",
     "uninstall:profile": "pwsh -NoProfile -File scripts/install.ps1 -Uninstall"
   },

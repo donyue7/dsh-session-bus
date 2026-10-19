@@ -19,8 +19,9 @@ DSH 会话总线插件：让**同一个工作区**或**不同工作区**的两�
 
 - **自动唤醒**：目标会话是冷的（进程里没有 Agent）会被 `resume`；空闲会话直接开始新回合。
 - **跨工作区**：目标会话在别的目录也能投递，Agent 在它自己的工作目录里继续干活。
-- **真·用户消息语义**：投递走的就是 GUI 发消息用的那条路径（`sessionController.prompt`），
-  消息进入目标会话日志、可被压缩、可被检索，和用户手打的完全一致。
+- **真·用户消息语义**：投递的消息就是一条 `user` 角色消息，进入目标会话日志、可被压缩、可被检索。
+  默认带 DSH 的 `agent-message` source，所以前端把它显示成**左侧「收到任务消息」卡片**而不是右侧气泡 ——
+  让读的人一眼看出"这不是我自己发的"（想还原成右侧气泡可设 `inboundPresentation: bubble`）。
 - **可回复**：被推送方看到 `[session-bus v1] from=<会话id>`，用 `bus_send` 把结果发回源会话，源会话同样被唤醒。
 
 ## 安装
@@ -131,6 +132,7 @@ Node 按**解析后的真实路径**缓存 ES 模块，所以宿主只会执行�
     maxHops: 8                  # 往返跳数预算，防互踢
     maxMessageChars: 20000      # 单条消息字符上限
     defaultMode: queue           # queue | steer
+    inboundPresentation: notice  # notice（左侧通知卡）| bubble（右侧用户气泡）
     deliveryTimeoutMs: 120000   # 单次投递预算
     audit: true                 # 写审计日志
     listLimit: 40               # bus_list 默认行数
@@ -143,6 +145,26 @@ Node 按**解析后的真实路径**缓存 ES 模块，所以宿主只会执行�
     tools: true
     enabled: true
 ```
+
+### 入站消息显示在哪：左侧通知卡还是右侧气泡
+
+DSH 前端按消息的 `source.kind` 决定一条 `user` 角色消息怎么画：
+
+- `source.kind === 'user'`（真人输入，即旧版投递路径）→ **右侧用户气泡**，看起来像本会话用户自己发的；
+- 其它生产者 kind（`agent-message` / `schedule` / `goal` / `tool-jobs` …）→ **左侧整宽卡片**：
+  唤醒新回合时是「收到任务消息 · 时间」可展开卡片，回合进行中插入时是「上下文注入」行。
+
+默认 `inboundPresentation: 'notice'`：插件用 `sessionController.resolveAgent()` 拿到目标 Agent，
+构造一条 source 为 `{ kind: 'agent-message', form: 'relay', senderSessionId, busMessageId, threadId, hop }`
+的用户消息，再用 `agent.followup()`（queue）/ `agent.steer()`（steer）投递，`ctx.sessions.flush()` 落盘。
+这不是 hack —— DSH 自己的 schedule、tool-jobs、subagent、Agent Teams 插件就是用同一条 Agent API
+投递"非本人"消息的；`agent-message` + `form: 'relay'` 正是 DSH 为"另一个 Agent 发给本会话"声明的 source 词汇。
+
+代价：这类卡片**默认折叠**，正文需要点开（DSH 前端对非用户消息的固定行为）。如果更想要"直接可读的右侧气泡"，
+把 `inboundPresentation` 设为 `bubble` 即回退到旧路径（`sessionController.prompt`，按 `requestId` 幂等）。
+两条路径都保留权限提升/还原、跳数记账、审计、长消息落盘；`bubble` 路径另外会带 `clientTimeZone`。
+
+> 兼容性：宿主没有 `resolveAgent`/Agent API（很旧或嵌入式宿主）时自动回退到 `bubble` 路径，投递不受影响。
 
 ### 权限：为什么推送会把目标会话提到调用方的等级
 
@@ -188,7 +210,7 @@ DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh`
 | --- | --- |
 | `bus_list` | 列出可达会话：`sessionId`、标题、工作目录、忙/闲、能否投递、**是否与你同工作目录**；支持 `offset` / `updated_within_minutes` / `active_only` |
 | `bus_find` | **按对话内容**找"该问谁"：检索全部工作区会话的全文，返回少数几个真正讨论过该话题的候选 + 命中片段 + 是否同目录 / 已有线程；只读，**不唤醒任何人**；结果带 `ambiguous` / `nextStep`，分不清时明确要求交给用户决定 |
-| `bus_send` | 把消息推入目标会话并唤醒它（`mode: queue` 排队 / `steer` 立即插入当前回合）；可带 `thread` / `reply_to` / `write_scopes` / `elevate` |
+| `bus_send` | 把消息推入目标会话并唤醒它（`mode: queue` 排队 / `steer` 立即插入当前回合）；默认以 `agent-message` source 投递，接收方看到左侧「收到任务消息」卡片（`inboundPresentation: bubble` 则退回右侧气泡）；可带 `thread` / `reply_to` / `write_scopes` / `elevate` |
 | `bus_read` | 读取目标会话最近的对话尾部（**不会**唤醒对方）；`since` 支持只取增量（可传**最近一条**入站信封上的 `msg=`，也可传 ISO 时间或毫秒时间戳；消息表裁剪后仍可由收件表还原） |
 | `bus_spawn` | 在指定工作区新建会话并把首条消息投进去；`spawn_key` 保证重试不会多建会话 |
 | `bus_threads` | 列出你的会话线程与各自"欠谁一条回复"，替代反复 `bus_read` 猜进度 |
@@ -216,7 +238,7 @@ DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh`
 
 ## 消息协议
 
-投递出去的消息是一条普通用户消息，首行是机器可解析的包头：
+投递出去的消息是一条 `user` 角色消息（默认 source.kind = `agent-message`），首行是机器可解析的包头：
 
 ```
 [session-bus v1] from=session-abc hop=1/8 msg=1f0c9a2b re=9d3c11 thread=t-4a7b21c9
@@ -233,7 +255,8 @@ Answer with the bus_send tool: bus_send({ to: "session-abc", message: "<your res
 请用 bus_send 工具把结果发回会话 session-abc，并带上 thread: "t-4a7b21c9"；不要只为确认收到而回复。
 ```
 
-- **幂等**：每条的 `msg` 同时是 `requestId`，宿主按它去重，重试不会重复投递。
+- **幂等**：默认投递把 `msg` 记在 source 的 `busMessageId` 上，重试时先在目标会话日志/收件箱里查重，
+  已落地就只回执、不再投递；`bubble` 路径仍用 `requestId` 让宿主去重。
 - **按会话线程计跳数**：`thread` 是对话标识，`hop` 只在**同一条线程**内递增，而且只统计**易手**
   （换到对面发言）次数：同一方连发两条补充消息算同一次易手，不额外花预算。
   给一个从未通过 bus 交流的对端发第一条消息，永远是 `hop=1` —— 一条繁忙的对话不会吃掉另一条的预算
@@ -285,12 +308,12 @@ Answer with the bus_send tool: bus_send({ to: "session-abc", message: "<your res
 
 ```powershell
 cd dsh-session-bus
-node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/find.test.mjs test/toolkit.test.mjs test/config.test.mjs test/threads.test.mjs test/plugin.test.mjs
+node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/find.test.mjs test/toolkit.test.mjs test/config.test.mjs test/threads.test.mjs test/plugin.test.mjs test/presentation.test.mjs
 ```
 
 （Node 24 下 `node --test test/` 会因目录解析报 `MODULE_NOT_FOUND`，所以逐个列出文件。）
 
-96 个用例，全部不依赖 DSH 运行时：
+105 个用例，全部不依赖 DSH 运行时：
 
 - `test/envelope.test.mjs` —— 包头渲染/解析、多行正文、恶意输入。
 - `test/resolve.test.mjs` —— 目标寻址的每一级、歧义拒绝、工作区匹配。
@@ -310,6 +333,10 @@ node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/
 - `test/plugin.test.mjs` —— 用假宿主**完整挂载插件**并真的调用全部工具，同时断言
   工具返回值不包含未声明的字段（宿主会按 `additionalProperties: false` 严格校验工具输出）；
   并钉住 `persistState` 到构造选项 `persist` 的接线（关掉时一个账本字节都不落盘，默认仍写）。
+- `test/presentation.test.mjs` —— v0.4 的呈现层：默认用 Agent API 投递 `agent-message`（不碰 prompt RPC）、
+  queue/steer 分别落到收件箱 `nextTurn`/`nextStep`、消息深冻结与 source 字段（sender/thread/hop/messageId）、
+  按日志与收件箱查重幂等、`bubble` 配置回退旧路径、没有 Agent API 的宿主自动回退、
+  无 Session store 时只跳过 flush、Agent 解析失败报 `delivery_failed`。
 
 ### 工具结果为什么由 schema 决定
 
@@ -323,7 +350,7 @@ node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/
 ```
 lib/index.js      Cordis 插件入口（name / inject / apply）
 lib/bus.js        核心：列举、寻址、投递、读取、新建；跳数跟踪与审计
-lib/tools.js      四个工具定义（原始 JSON Schema）
+lib/tools.js      六个工具定义（原始 JSON Schema）
 lib/toolkit.js    零依赖的 defineTool：参数校验 + 按 output.schema 投影结果
 lib/envelope.js   消息包头渲染/解析
 lib/resolve.js    纯函数：会话与工作区寻址

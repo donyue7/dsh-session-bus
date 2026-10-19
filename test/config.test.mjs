@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { DEFAULT_CONFIG, TARGET_PERMISSION_VALUES, normalizeConfig, permissionRank } from '../lib/config.js';
+import { DEFAULT_CONFIG, INBOUND_PRESENTATION_VALUES, TARGET_PERMISSION_VALUES, normalizeConfig, permissionRank } from '../lib/config.js';
 
 test('an empty config yields every documented default', () => {
   assert.deepEqual(normalizeConfig(), DEFAULT_CONFIG);
@@ -27,6 +27,16 @@ test('permissionRank orders the presets and isolates unknown ones', () => {
   // `custom` (and anything unrecognized) must never be re-configured away.
   assert.ok(permissionRank('danger-full-access') < permissionRank('custom'));
   assert.ok(permissionRank('danger-full-access') < permissionRank(undefined));
+});
+
+test('inbound messages are presented as non-human notices by default', () => {
+  assert.equal(DEFAULT_CONFIG.inboundPresentation, 'notice');
+  assert.deepEqual(INBOUND_PRESENTATION_VALUES, ['notice', 'bubble']);
+  for (const value of INBOUND_PRESENTATION_VALUES) {
+    assert.equal(normalizeConfig({ inboundPresentation: value }).inboundPresentation, value);
+  }
+  assert.equal(normalizeConfig({ inboundPresentation: 'chat' }).inboundPresentation, 'notice');
+  assert.equal(normalizeConfig({ inboundPresentation: 1 }).inboundPresentation, 'notice');
 });
 
 test('malformed scalars fall back instead of reaching the core', () => {
