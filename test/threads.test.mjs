@@ -497,6 +497,29 @@ test('P1-3 a busy Session keeps the level it still needs', async () => {
   assert.equal(bus.elevated.size, 1);
 });
 
+test('P1-3 a guarded `agents` service still lets the restore run', async () => {
+  const host = createHost();
+  const { bus } = mountWithTools(host, { restorePermission: true });
+  await bus.send({ to: PEER, message: 'do it', sender: senderA });
+  assert.equal(host.presetOf.get(PEER), 'danger-full-access');
+
+  // On the real Host `ctx.agents` is a service this plugin never declares in
+  // `inject`, so Cordis throws on the plain read; that throw used to escape the
+  // turn/end hook and kill the Host. `ctx.get('agents')` is the safe accessor.
+  const agents = host.agents;
+  const get = host.get;
+  Object.defineProperty(host, 'agents', {
+    configurable: true,
+    get() { throw new Error('cannot get property "agents" without inject'); },
+  });
+  host.get = (key) => (key === 'agents' ? agents : get(key));
+
+  host.handlers[0]({ id: PEER }, { type: 'turn/end' });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(host.presetOf.get(PEER), 'workspace-write');
+  assert.equal(bus.elevated.size, 0);
+});
+
 test('P1-3 restartorePermission=false leaves the raise in place', async () => {
   const host = createHost();
   const { bus } = mountWithTools(host, { restorePermission: false });
