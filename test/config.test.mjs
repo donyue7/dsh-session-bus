@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { DEFAULT_CONFIG, INBOUND_PRESENTATION_VALUES, TARGET_PERMISSION_VALUES, normalizeConfig, permissionRank } from '../lib/config.js';
+import { DEFAULT_CONFIG, INBOUND_PRESENTATION_VALUES, MODE_VALUES, TARGET_PERMISSION_VALUES, normalizeConfig, permissionRank } from '../lib/config.js';
 
 test('an empty config yields every documented default', () => {
   assert.deepEqual(normalizeConfig(), DEFAULT_CONFIG);
@@ -39,12 +39,26 @@ test('inbound messages are presented as non-human notices by default', () => {
   assert.equal(normalizeConfig({ inboundPresentation: 1 }).inboundPresentation, 'notice');
 });
 
+test('delivery modes include the conclusion-safe interrupt', () => {
+  assert.deepEqual(MODE_VALUES, ['queue', 'steer', 'interrupt']);
+  for (const value of MODE_VALUES) assert.equal(normalizeConfig({ defaultMode: value }).defaultMode, value);
+  assert.equal(normalizeConfig({ defaultMode: 'parallel' }).defaultMode, 'queue');
+  assert.equal(normalizeConfig({ defaultMode: true }).defaultMode, 'queue');
+});
+
+test('replies to the peer are upgraded to interrupt unless disabled', () => {
+  assert.equal(DEFAULT_CONFIG.interruptReplies, true);
+  assert.equal(normalizeConfig({}).interruptReplies, true);
+  assert.equal(normalizeConfig({ interruptReplies: false }).interruptReplies, false);
+  assert.equal(normalizeConfig({ interruptReplies: 'no' }).interruptReplies, true);
+});
+
 test('malformed scalars fall back instead of reaching the core', () => {
   const config = normalizeConfig({
     enabled: 'yes',
     maxHops: 0,
     maxMessageChars: 10 ** 9,
-    defaultMode: 'interrupt',
+    defaultMode: 'parallel',
     deliveryTimeoutMs: 1,
     listLimit: 3.5,
     audit: 'no',

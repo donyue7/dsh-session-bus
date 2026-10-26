@@ -131,7 +131,8 @@ Node 按**解析后的真实路径**缓存 ES 模块，所以宿主只会执行�
     allowSelf: false            # 禁止发给自己
     maxHops: 8                  # 往返跳数预算，防互踢
     maxMessageChars: 20000      # 单条消息字符上限
-    defaultMode: queue           # queue | steer
+    defaultMode: queue           # queue | steer | interrupt（interrupt = 结论插队，只在目标运行时打断）
+    interruptReplies: true       # 回答对方自己的消息时，若对方在跑则自动升级为 interrupt
     inboundPresentation: notice  # notice（左侧通知卡）| bubble（右侧用户气泡）
     deliveryTimeoutMs: 120000   # 单次投递预算
     audit: true                 # 写审计日志
@@ -170,6 +171,26 @@ DSH 前端按消息的 `source.kind` 决定一条 `user` 角色消息怎么画�
 > 会用首条消息的第一行（去掉 `#`/`>` 等 Markdown 前缀，最多 60 个字符）给新会话命名；
 > 重试命中的旧会话不会改名，`bubble` 路径仍沿用 DSH 的自动标题。
 
+### 结论要插队：`mode: interrupt`
+
+A 算出结论时 B 可能还在跑。把结论排到 B 回合结束后就晚了——B 会先按旧假设干下去。
+三档投递语义：
+
+| mode | 目标正在运行 | 目标空闲 / 冷 |
+| --- | --- | --- |
+| `queue`（默认） | 等当前回合结束，进 `nextTurn` | 唤醒起新回合 |
+| `steer` | 立即插入当前回合（无条件） | 也塞进 `nextStep`（旧行为，不建议） |
+| `interrupt` | **立即插入当前回合**（`agent.steer`） | 照常唤醒（`agent.followup`） |
+
+`interrupt` 是"结论安全"模式：目标在跑就插队，空闲就正常唤醒，不会像 `steer` 那样把消息卡在
+没人消费的 `nextStep`。另外，**回答对方自己消息**（`re=` 指向对方发来的那条）的发送会自动升级为
+`interrupt`——这正是"A 的结论给 B"的常见形态；显式 `mode` 永远优先，所以单条传 `mode: "queue"`
+即可关掉自动升级，`interruptReplies: false` 可全局关闭。
+
+接收端信封会带 `mode=interrupt` 包头，`--- reply ---` 段明确提醒："这是插队消息，可能在你当前回合
+进行中到达；把它当作比手上任务更新的信息，下一步前据此调整，别按旧假设收尾。"回执新增
+`interrupted`（是否真的插进了运行中的回合），`note` 会说明插队原因（含"回答的是对方自己的消息"）。
+
 ### 权限：为什么推送会把目标会话提到调用方的等级
 
 DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh` 子进程起不来
@@ -206,7 +227,7 @@ DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh`
 
 非法值一律回落到默认值。配置项由 `lib/config.js` 归一化（不依赖外部包，见下节）。
 
-审计日志：`<DSH_HOME>/session-bus/audit.jsonl`，每条投递一行 JSON（来源/目标/模式/跳数/字符数/是否跨区/是否新建）。
+审计日志：`<DSH_HOME>/session-bus/audit.jsonl`，每条投递一行 JSON（来源/目标/模式/实际注入方式/是否插队/跳数/字符数/是否跨区/是否新建）。
 
 ## 工具
 
@@ -214,7 +235,7 @@ DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh`
 | --- | --- |
 | `bus_list` | 列出可达会话：`sessionId`、标题、工作目录、忙/闲、能否投递、**是否与你同工作目录**；支持 `offset` / `updated_within_minutes` / `active_only` |
 | `bus_find` | **按对话内容**找"该问谁"：检索全部工作区会话的全文，返回少数几个真正讨论过该话题的候选 + 命中片段 + 是否同目录 / 已有线程；只读，**不唤醒任何人**；结果带 `ambiguous` / `nextStep`，分不清时明确要求交给用户决定 |
-| `bus_send` | 把消息推入目标会话并唤醒它（`mode: queue` 排队 / `steer` 立即插入当前回合）；默认以 `agent-message` source 投递，接收方看到左侧「收到任务消息」卡片（`inboundPresentation: bubble` 则退回右侧气泡）；可带 `thread` / `reply_to` / `write_scopes` / `elevate` |
+| `bus_send` | 把消息推入目标会话并唤醒它（`mode: queue` 排队 / `steer` 立即插入 / **`interrupt` 结论插队：目标在跑时插入当前回合，空闲时正常唤醒**；回答对方自己的消息会自动升级为 `interrupt`，显式 `mode: queue` 可关闭单条升级）；默认以 `agent-message` source 投递，接收方看到左侧「收到任务消息」卡片（`inboundPresentation: bubble` 则退回右侧气泡）；可带 `thread` / `reply_to` / `write_scopes` / `elevate` |
 | `bus_read` | 读取目标会话最近的对话尾部（**不会**唤醒对方）；`since` 支持只取增量（可传**最近一条**入站信封上的 `msg=`，也可传 ISO 时间或毫秒时间戳；消息表裁剪后仍可由收件表还原） |
 | `bus_spawn` | 在指定工作区新建会话并把首条消息投进去；`spawn_key` 保证重试不会多建会话 |
 | `bus_threads` | 列出你的会话线程与各自"欠谁一条回复"，替代反复 `bus_read` 猜进度 |
@@ -317,7 +338,7 @@ node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/
 
 （Node 24 下 `node --test test/` 会因目录解析报 `MODULE_NOT_FOUND`，所以逐个列出文件。）
 
-109 个用例，全部不依赖 DSH 运行时：
+120 个用例，全部不依赖 DSH 运行时：
 
 - `test/envelope.test.mjs` —— 包头渲染/解析、多行正文、恶意输入。
 - `test/resolve.test.mjs` —— 目标寻址的每一级、歧义拒绝、工作区匹配。
@@ -337,8 +358,11 @@ node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/
 - `test/plugin.test.mjs` —— 用假宿主**完整挂载插件**并真的调用全部工具，同时断言
   工具返回值不包含未声明的字段（宿主会按 `additionalProperties: false` 严格校验工具输出）；
   并钉住 `persistState` 到构造选项 `persist` 的接线（关掉时一个账本字节都不落盘，默认仍写）。
-- `test/presentation.test.mjs` —— v0.4 的呈现层：默认用 Agent API 投递 `agent-message`（不碰 prompt RPC）、
-  queue/steer 分别落到收件箱 `nextTurn`/`nextStep`、消息深冻结与 source 字段（sender/thread/hop/messageId）、
+- `test/presentation.test.mjs` —— v0.4/v0.5 的呈现与投递语义：默认用 Agent API 投递 `agent-message`（不碰 prompt RPC）、
+  queue/steer/interrupt 分别落到收件箱 `nextTurn`/`nextStep`、`interrupt` 在目标运行时插队而空闲时唤醒、
+  回答对方自己的消息自动升级为 `interrupt`（可被 `interruptReplies: false` 或显式 `mode: "queue"` 关闭）、
+  `defaultMode: "interrupt"`、bubble 路径把 `interrupt` 映射为 steer/queue、信封 `mode=interrupt` 标记与
+  接收端"以新信息为准"提示、消息深冻结与 source 字段（sender/thread/hop/messageId）、
   按日志与收件箱查重幂等、`bubble` 配置回退旧路径、没有 Agent API 的宿主自动回退、
   无 Session store 时只跳过 flush、Agent 解析失败报 `delivery_failed`；以及 notice 模式下 `bus_spawn`
   用首行给新会话命名、重试命中的旧会话不改名、标题服务拒绝也不影响投递。

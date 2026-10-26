@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { SessionBus } from '../lib/bus.js';
-import { parseEnvelope } from '../lib/envelope.js';
+import { parseEnvelope, renderEnvelope } from '../lib/envelope.js';
 
 const CLOCK = 1760000000000;
 
@@ -260,6 +260,171 @@ test('a re-adopted spawn keeps the first title and skips the rename', async () =
   assert.equal(again.created, false);
   assert.equal(again.sessionId, first.sessionId);
   assert.equal(host.renames.length, 1);
+});
+
+test('a title service that refuses leaves the spawn successful', async () => {
+  const host = withSpawn(createHost());
+  host.sessionController.rename = async () => {
+    throw new Error('gateway/internal: renaming is unavailable');
+  };
+  const warnings = [];
+  const bus = createBus(host, {}, { warn: (line) => warnings.push(line) });
+  const receipt = await bus.spawn({ message: '## 标题', workspace: 'ws-a', sender: senderA });
+
+  assert.equal(receipt.delivered, true);
+  assert.equal(receipt.created, true);
+  assert.equal(host.inbox.nextTurn.length, 1);
+  assert.match(warnings.join('\n'), /spawned "session-spawn001" without a title/);
+});
+
+// --- interrupt delivery: a conclusion must reach a busy peer now ------------
+
+/** The peer Session that owns the agent double in createHost. */
+const senderB = { id: 'session-other002', title: 'Other', cwd: 'C:\\work\\b' };
+
+/** Send a message from the peer to this Session and return its receipt. */
+async function peerSendsToSelf(bus) {
+  return bus.send({ to: 'Main', message: 'my conclusion is X', sender: senderB });
+}
+
+/** Drop whatever the Host double collected so a test starts from an empty inbox. */
+function clearInbox(host) {
+  host.inbox.nextTurn.length = 0;
+  host.inbox.nextStep.length = 0;
+}
+
+test('interrupt cuts into the running turn so the peer sees the conclusion now', async () => {
+  const host = createHost();
+  host.agent.status = 'running';
+  const bus = createBus(host);
+  const receipt = await bus.send({
+    to: 'Other',
+    message: 'stop: the schema is locked, do not edit it',
+    mode: 'interrupt',
+    sender: senderA,
+  });
+
+  assert.equal(receipt.delivered, true);
+  assert.equal(receipt.mode, 'interrupt');
+  assert.equal(receipt.interrupted, true);
+  // Steered into the live step instead of queued behind the turn.
+  assert.equal(host.inbox.nextStep.length, 1);
+  assert.equal(host.inbox.nextTurn.length, 0);
+  assert.equal(host.prompts.length, 0);
+  assert.match(receipt.note, /injected into it immediately/);
+
+  const envelope = parseEnvelope(host.inbox.nextStep[0].content[0].text);
+  assert.equal(envelope.mode, 'interrupt');
+  assert.match(host.inbox.nextStep[0].content[0].text, /newer information/);
+});
+
+test('interrupt wakes an idle peer like queue instead of parking a step', async () => {
+  const host = createHost();
+  // The Session row is stale: it still says running, the live Agent does not.
+  assert.equal(host.agent.status, 'idle');
+  const bus = createBus(host);
+  const receipt = await bus.send({ to: 'Other', message: 'fyi', mode: 'interrupt', sender: senderA });
+
+  assert.equal(receipt.mode, 'interrupt');
+  assert.equal(receipt.interrupted, false);
+  assert.equal(host.inbox.nextTurn.length, 1);
+  assert.equal(host.inbox.nextStep.length, 0);
+});
+
+test('answering the peer\'s own message is upgraded to an interrupt while it runs', async () => {
+  const host = createHost();
+  const bus = createBus(host);
+  const question = await peerSendsToSelf(bus);
+  clearInbox(host);
+  host.agent.status = 'running';
+
+  const receipt = await bus.send({
+    to: 'Other',
+    message: 'here is the conclusion you asked for',
+    sender: senderA,
+    replyTo: question.messageId,
+  });
+
+  assert.equal(receipt.mode, 'interrupt');
+  assert.equal(receipt.interrupted, true);
+  assert.equal(host.inbox.nextStep.length, 1);
+  assert.equal(host.inbox.nextTurn.length, 0);
+  assert.match(receipt.note, /answered the target's own message/);
+});
+
+test('the automatic interrupt upgrade can be disabled or opted out', async () => {
+  // interruptReplies: false keeps the old queue behaviour.
+  const quiet = createHost();
+  const quietBus = createBus(quiet, { interruptReplies: false });
+  const question = await peerSendsToSelf(quietBus);
+  clearInbox(quiet);
+  quiet.agent.status = 'running';
+  const queued = await quietBus.send({
+    to: 'Other', message: 'answer', sender: senderA, replyTo: question.messageId,
+  });
+  assert.equal(queued.mode, 'queue');
+  assert.equal(queued.interrupted, false);
+  assert.equal(quiet.inbox.nextTurn.length, 1);
+
+  // An explicit mode always wins over the upgrade.
+  const host = createHost();
+  const bus = createBus(host);
+  const asked = await peerSendsToSelf(bus);
+  clearInbox(host);
+  host.agent.status = 'running';
+  const explicit = await bus.send({
+    to: 'Other', message: 'answer later', mode: 'queue', sender: senderA, replyTo: asked.messageId,
+  });
+  assert.equal(explicit.mode, 'queue');
+  assert.equal(host.inbox.nextTurn.length, 1);
+  assert.equal(host.inbox.nextStep.length, 0);
+});
+
+test('defaultMode "interrupt" cuts in without naming the mode per message', async () => {
+  const host = createHost();
+  host.agent.status = 'running';
+  const bus = createBus(host, { defaultMode: 'interrupt' });
+  const receipt = await bus.send({ to: 'Other', message: 'correction', sender: senderA });
+
+  assert.equal(receipt.mode, 'interrupt');
+  assert.equal(receipt.interrupted, true);
+  assert.equal(host.inbox.nextStep.length, 1);
+});
+
+test('the prompt fallback maps interrupt onto steer only for a running target', async () => {
+  const running = createHost();
+  const runningBus = createBus(running, { inboundPresentation: 'bubble' });
+  await runningBus.send({ to: 'Other', message: 'conclusion', mode: 'interrupt', sender: senderA });
+  assert.equal(running.prompts.length, 1);
+  assert.equal(running.prompts[0].mode, 'steer');
+
+  const idle = createHost();
+  idle.sessions[1].running = false;
+  const idleBus = createBus(idle, { inboundPresentation: 'bubble' });
+  await idleBus.send({ to: 'Other', message: 'conclusion', mode: 'interrupt', sender: senderA });
+  assert.equal(idle.prompts[0].mode, 'queue');
+});
+
+test('the envelope carries the interrupt marker only for interrupt deliveries', () => {
+  const base = {
+    fromId: 'session-main0001',
+    hop: 1,
+    maxHops: 8,
+    messageId: 'msg000000001',
+    threadId: 't-1',
+    replyTo: 'msg000000000',
+    time: '2026-10-26T00:00:00.000Z',
+    text: 'body',
+  };
+  const interrupt = renderEnvelope({ ...base, mode: 'interrupt' });
+  assert.match(interrupt, / mode=interrupt/);
+  assert.match(interrupt, /newer information/);
+  assert.equal(parseEnvelope(interrupt).mode, 'interrupt');
+
+  const normal = renderEnvelope(base);
+  assert.doesNotMatch(normal, /mode=interrupt/);
+  assert.doesNotMatch(normal, /newer information/);
+  assert.equal(parseEnvelope(normal).mode, undefined);
 });
 
 test('a title service that refuses leaves the spawn successful', async () => {
