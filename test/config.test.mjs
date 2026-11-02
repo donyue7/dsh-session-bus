@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { DEFAULT_CONFIG, INBOUND_PRESENTATION_VALUES, MODE_VALUES, TARGET_PERMISSION_VALUES, normalizeConfig, permissionRank } from '../lib/config.js';
+import { DEFAULT_CONFIG, INBOUND_PRESENTATION_VALUES, KIND_VALUES, MODE_VALUES, TARGET_PERMISSION_VALUES, normalizeConfig, permissionRank } from '../lib/config.js';
 
 test('an empty config yields every documented default', () => {
   assert.deepEqual(normalizeConfig(), DEFAULT_CONFIG);
@@ -39,11 +39,18 @@ test('inbound messages are presented as non-human notices by default', () => {
   assert.equal(normalizeConfig({ inboundPresentation: 1 }).inboundPresentation, 'notice');
 });
 
-test('delivery modes include the conclusion-safe interrupt', () => {
-  assert.deepEqual(MODE_VALUES, ['queue', 'steer', 'interrupt']);
+test('delivery modes include the conclusion-safe interrupt and the silent inbox', () => {
+  assert.deepEqual(MODE_VALUES, ['queue', 'steer', 'interrupt', 'inbox']);
   for (const value of MODE_VALUES) assert.equal(normalizeConfig({ defaultMode: value }).defaultMode, value);
   assert.equal(normalizeConfig({ defaultMode: 'parallel' }).defaultMode, 'queue');
   assert.equal(normalizeConfig({ defaultMode: true }).defaultMode, 'queue');
+  assert.deepEqual(KIND_VALUES, ['task', 'conclusion', 'correction', 'question', 'notice', 'ack']);
+});
+
+test('the default hop budget fits a real question and answer', () => {
+  assert.equal(DEFAULT_CONFIG.maxHops, 16);
+  assert.equal(normalizeConfig({}).maxHops, 16);
+  assert.equal(normalizeConfig({ maxHops: 24 }).maxHops, 24);
 });
 
 test('replies to the peer are upgraded to interrupt unless disabled', () => {

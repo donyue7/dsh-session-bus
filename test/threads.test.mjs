@@ -170,7 +170,7 @@ test('P0-1 the ledger survives a Host restart', async () => {
     // A brand-new bus, as after a restart: the thread and its hop count are back.
     const second = createHost();
     const busB = createSessionBus({ ctx: second, config: { audit: false, spoolLongMessages: false }, clock: () => 1760000000000 });
-    const threads = busB.threads({ sender: senderA });
+    const threads = await busB.threads({ sender: senderA });
     assert.equal(threads.total, 1);
     assert.equal(threads.threads[0].threadId, sent.threadId);
     const reply = await busB.send({ to: SELF, message: 'answer', sender: senderB });
@@ -621,4 +621,27 @@ test('R2-A an inbox id survives pruning of the message table', () => {
   }
   assert.equal(ledger.message('m-keep')?.threadId, 't-keep', 'the inbox keeps the id the message table pruned');
   assert.equal(ledger.message('m-nope'), undefined);
+});
+
+test('bus_threads reports delivery state, preview and the raised budget', async () => {
+  const bus = createSessionBus({
+    ctx: createHost(),
+    config: { audit: false, spoolLongMessages: false, persistState: false },
+    persist: false,
+    clock: () => 1760000000000,
+  });
+  const sent = await bus.send({ to: PEER, message: '  first line\nsecond line ', sender: senderA });
+  const listing = await bus.threads({ sender: senderA });
+  assert.equal(listing.total, 1);
+  const row = listing.threads[0];
+  assert.equal(row.threadId, sent.threadId);
+  assert.equal(row.state, 'pending');
+  assert.equal(row.closed, false);
+  assert.equal(row.lastMessageState, 'unknown');
+  assert.equal(row.peerRunning, undefined);
+  assert.equal(row.lastKind, undefined);
+  assert.match(row.lastPreview, /first line/);
+  assert.equal(row.hopBudget, 16);
+  assert.equal(row.hopRemaining, 15);
+  assert.equal(typeof row.lastAgeMinutes, 'number');
 });

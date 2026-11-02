@@ -157,7 +157,7 @@ test('bus_send rejects malformed arguments before touching the Host', async () =
   apply(ctx, { audit: false, persistState: false });
   const tool = ctx.registered.find((item) => item.name === 'bus_send');
   await assert.rejects(() => tool.execute({ message: 'no target' }, execFor(ctx)), /missing required property "to"/);
-  await assert.rejects(() => tool.execute({ to: 'Peer', message: 'x', mode: 'now' }, execFor(ctx)), /must be one of \["queue","steer","interrupt"\]/);
+  await assert.rejects(() => tool.execute({ to: 'Peer', message: 'x', mode: 'now' }, execFor(ctx)), /must be one of \["queue","steer","interrupt","inbox"\]/);
   await assert.rejects(() => tool.execute({ to: 'Peer', message: 'x', extra: 1 }, execFor(ctx)), /not a declared property/);
   await assert.rejects(() => tool.execute({ to: 'Peer', message: 'x', force: 'yes' }, execFor(ctx)), /must be a boolean/);
   assert.equal(ctx.prompts.length, 0);

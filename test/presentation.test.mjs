@@ -441,3 +441,46 @@ test('a title service that refuses leaves the spawn successful', async () => {
   assert.equal(host.inbox.nextTurn.length, 1);
   assert.match(warnings.join('\n'), /spawned "session-spawn001" without a title/);
 });
+
+test('mode "inbox" leaves the message for the peer without waking it', async () => {
+  const host = createHost();
+  const injected = [];
+  host.agent.inject = (message) => { injected.push(message); };
+  const bus = createBus(host);
+  const receipt = await bus.send({ to: 'Other', message: 'ack only', mode: 'inbox', sender: senderA });
+
+  assert.equal(receipt.mode, 'inbox');
+  assert.equal(receipt.injected, 'inbox');
+  assert.equal(receipt.interrupted, false);
+  assert.equal(injected.length, 1);
+  assert.equal(host.inbox.nextTurn.length, 0);
+  assert.equal(host.inbox.nextStep.length, 0);
+  assert.equal(host.prompts.length, 0);
+});
+
+test('mode "inbox" falls back to a normal wake when the Host cannot inject', async () => {
+  const host = createHost();
+  const bus = createBus(host);
+  const receipt = await bus.send({ to: 'Other', message: 'ack only', mode: 'inbox', sender: senderA });
+
+  assert.equal(receipt.injected, 'followup');
+  assert.equal(host.inbox.nextTurn.length, 1);
+});
+
+test('kind decides whether answering the peer interrupts it', async () => {
+  const host = createHost();
+  const bus = createBus(host);
+  const question = await peerSendsToSelf(bus);
+  clearInbox(host);
+  host.agent.status = 'running';
+
+  const task = await bus.send({ to: 'Other', message: 'new task', sender: senderA, replyTo: question.messageId, kind: 'task' });
+  assert.equal(task.mode, 'queue');
+  assert.equal(host.inbox.nextTurn.length, 1);
+  assert.equal(host.inbox.nextStep.length, 0);
+
+  const conclusion = await bus.send({ to: 'Other', message: 'conclusion', sender: senderA, replyTo: question.messageId, kind: 'conclusion' });
+  assert.equal(conclusion.mode, 'interrupt');
+  assert.equal(conclusion.interrupted, true);
+  assert.equal(host.inbox.nextStep.length, 1);
+});

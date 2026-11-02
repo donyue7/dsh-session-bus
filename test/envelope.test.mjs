@@ -67,3 +67,24 @@ test('parseEnvelope tolerates a leading blank line', () => {
   const parsed = parseEnvelope(`\n\n${renderEnvelope(base)}`);
   assert.equal(parsed?.from, 'session-aaaa1111');
 });
+
+test('renderEnvelope shows kind and closing, and closing drops the reply instructions', () => {
+  const text = renderEnvelope({ ...base, kind: 'conclusion', closing: true, hopRemaining: 1 });
+  assert.ok(text.includes('kind: conclusion'));
+  assert.ok(text.includes('closing: true'));
+  assert.ok(text.includes('closes the conversation'));
+  assert.ok(!text.includes('bus_send({ to:'));
+  assert.ok(!text.includes('Hop budget:'));
+  const parsed = parseEnvelope(text);
+  assert.equal(parsed.kind, 'conclusion');
+  assert.equal(parsed.closing, true);
+});
+
+test('renderEnvelope warns about a low hop budget and about queued staleness', () => {
+  const text = renderEnvelope({ ...base, mode: 'queue', hopRemaining: 2 });
+  assert.ok(text.includes('Hop budget: 2 of 8 left'));
+  assert.ok(text.includes('sent-at is when this was written'));
+  const interrupt = renderEnvelope({ ...base, mode: 'interrupt', kind: 'correction', hopRemaining: 2 });
+  assert.ok(interrupt.includes('This message is an interrupt (correction):'));
+  assert.equal(parseEnvelope(interrupt).mode, 'interrupt');
+});

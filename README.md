@@ -129,9 +129,9 @@ Node 按**解析后的真实路径**缓存 ES 模块，所以宿主只会执行�
     allowCrossWorkspace: true   # 允许跨工作区投递
     allowSpawn: true            # 允许 bus_spawn 新建会话
     allowSelf: false            # 禁止发给自己
-    maxHops: 8                  # 往返跳数预算，防互踢
+    maxHops: 16                 # 往返跳数预算，防互踢（一轮真实问答约 3 跳；长线程用 max_hops 提升）
     maxMessageChars: 20000      # 单条消息字符上限
-    defaultMode: queue           # queue | steer | interrupt（interrupt = 结论插队，只在目标运行时打断）
+    defaultMode: queue           # queue | steer | interrupt（结论插队）| inbox（静默投递不唤醒）
     interruptReplies: true       # 回答对方自己的消息时，若对方在跑则自动升级为 interrupt
     inboundPresentation: notice  # notice（左侧通知卡）| bubble（右侧用户气泡）
     deliveryTimeoutMs: 120000   # 单次投递预算
@@ -191,6 +191,26 @@ A 算出结论时 B 可能还在跑。把结论排到 B 回合结束后就晚了
 进行中到达；把它当作比手上任务更新的信息，下一步前据此调整，别按旧假设收尾。"回执新增
 `interrupted`（是否真的插进了运行中的回合），`note` 会说明插队原因（含"回答的是对方自己的消息"）。
 
+### 长线程、收线与静默投递（v0.6）
+
+一轮真实协作往往不止三条消息。v0.6 把这些操作显式化：
+
+- **跳数预算**：默认 `maxHops: 16`。`bus_send({ max_hops: 24 })` 把**这个线程**的预算提到 24 并写进线程记录，
+  之后该线程都用新预算——比每次 `force: true` 安全，`force` 只在单条消息上硬闯，预算本身没变。
+  信封在剩余跳数 ≤2 时会提醒对方收线。
+- **收线**：`bus_send({ closing: true })` 表示"这条是最后一条，不用回"。信封不再要求对方回复，
+  线程从"欠一条回复"变成 closed；收线消息**即使超出跳数预算也会送达**，不会出现线程耗尽后无法正常结束。
+  收线后再发同一对端会开启新线程（也可用 `new_thread: true` 显式指定新线程）。
+- **kind 决定是否插队**：`bus_send({ kind: "conclusion" | "correction" | "task" | "question" | "notice" | "ack" })`。
+  只有 `conclusion` / `correction`（或缺省）会被自动升级为 `interrupt`；`task` / `notice` / `ack`
+  即使"回答对方自己的消息"也保持排队，避免一条补充说明打断对方整轮工作。
+- **静默 inbox**：`mode: "inbox"` 用宿主 `agent.inject()` 只把消息放进对方信箱、**不唤醒**它
+  （下一回合自然读到）；用于 ack、知会、收尾，不再消耗对方一整轮。宿主不支持 `inject` 时自动回退为普通唤醒。
+- **投递状态**：`bus_threads` 现在给出每个线程的 `state`（closed / awaitingYou / pending / idle）、`peerRunning`，
+  以及最后一条消息的 `lastMessageState`（`queued` / `consumed` / `unknown`）、`lastKind`、`lastPreview`、
+  `lastAgeMinutes`——`queued` ≠ 对方已处理，别把"已送达"当"已读"。
+- **旧消息**：信封的 `sent-at` 是**写入时间**，不一定是送达时间；排队很久的消息会附带提醒，先核对当前状态再行动。
+
 ### 权限：为什么推送会把目标会话提到调用方的等级
 
 DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh` 子进程起不来
@@ -235,10 +255,10 @@ DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh`
 | --- | --- |
 | `bus_list` | 列出可达会话：`sessionId`、标题、工作目录、忙/闲、能否投递、**是否与你同工作目录**；支持 `offset` / `updated_within_minutes` / `active_only` |
 | `bus_find` | **按对话内容**找"该问谁"：检索全部工作区会话的全文，返回少数几个真正讨论过该话题的候选 + 命中片段 + 是否同目录 / 已有线程；只读，**不唤醒任何人**；结果带 `ambiguous` / `nextStep`，分不清时明确要求交给用户决定 |
-| `bus_send` | 把消息推入目标会话并唤醒它（`mode: queue` 排队 / `steer` 立即插入 / **`interrupt` 结论插队：目标在跑时插入当前回合，空闲时正常唤醒**；回答对方自己的消息会自动升级为 `interrupt`，显式 `mode: queue` 可关闭单条升级）；默认以 `agent-message` source 投递，接收方看到左侧「收到任务消息」卡片（`inboundPresentation: bubble` 则退回右侧气泡）；可带 `thread` / `reply_to` / `write_scopes` / `elevate` |
+| `bus_send` | 把消息推入目标会话并唤醒它（`mode: queue` 排队 / `steer` 立即插入 / **`interrupt` 结论插队：目标在跑时插入当前回合，空闲时正常唤醒** / **`inbox` 静默投递不唤醒**；回答对方自己的消息会自动升级为 `interrupt`，显式 `mode: queue` 可关闭单条升级，`kind` 可精确控制哪类回答才升级）；默认以 `agent-message` source 投递，接收方看到左侧「收到任务消息」卡片（`inboundPresentation: bubble` 则退回右侧气泡）；可带 `thread` / `reply_to` / `write_scopes` / `elevate` / **`kind`** / **`max_hops`** / **`new_thread`** / **`closing`** |
 | `bus_read` | 读取目标会话最近的对话尾部（**不会**唤醒对方）；`since` 支持只取增量（可传**最近一条**入站信封上的 `msg=`，也可传 ISO 时间或毫秒时间戳；消息表裁剪后仍可由收件表还原） |
 | `bus_spawn` | 在指定工作区新建会话并把首条消息投进去；`spawn_key` 保证重试不会多建会话 |
-| `bus_threads` | 列出你的会话线程与各自"欠谁一条回复"，替代反复 `bus_read` 猜进度 |
+| `bus_threads` | 列出你的会话线程与各自"欠谁一条回复"，替代反复 `bus_read` 猜进度；v0.6 起还给出线程 `state`、`peerRunning`、最后一条的 `lastMessageState`（queued/consumed/unknown）、`lastKind`、`lastPreview`、`lastAgeMinutes` |
 
 目标寻址支持：完整 `sessionId`、唯一 id 前缀、唯一标题、唯一工作目录片段、`self`。
 **有歧义时报错并列出候选，绝不猜**。
@@ -338,12 +358,14 @@ node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/
 
 （Node 24 下 `node --test test/` 会因目录解析报 `MODULE_NOT_FOUND`，所以逐个列出文件。）
 
-120 个用例，全部不依赖 DSH 运行时：
+131 个用例，全部不依赖 DSH 运行时（v0.6 新增 `max_hops` / `closing` / `new_thread` / `inbox` / `kind` / 线程状态等用例）：
 
-- `test/envelope.test.mjs` —— 包头渲染/解析、多行正文、恶意输入。
+- `test/envelope.test.mjs` —— 包头渲染/解析、多行正文、恶意输入；v0.6 的 `kind`/`closing` 元数据、
+  收线信封省略回复指示、剩余跳数告警、queue 消息的"写入时间≠送达时间"提醒，以及 parse 往返。
 - `test/resolve.test.mjs` —— 目标寻址的每一级、歧义拒绝、工作区匹配。
 - `test/bus.test.mjs` —— 用假宿主验证：投递请求、跳数递增、跨区策略、自投递拒绝、长度上限、
-  subagent 拒绝、`bus_spawn`、`bus_read`、投递失败的错误信息。
+  subagent 拒绝、`bus_spawn`、`bus_read`、投递失败的错误信息；v0.6 的 `max_hops` 只提升本线程预算、
+  `closing` 收线并豁免跳数预算、`new_thread` 从 hop 1 起、未知 `kind` 在投递前拒绝。
 - `test/find.test.mjs` —— v0.3 的路由：全文索引命中、只保留可投递会话（排除自己/subagent/看不见的）、
   已有线程标记、候选数截断、无索引时退化为标题匹配、检索后端报错不致命、空问题返回 `empty_query`、
   工具结果与声明 schema 一致且**不唤醒任何会话**；以及**歧义策略**：多个同等候选 / 索引无真实命中 /
@@ -354,7 +376,8 @@ node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/
   reject 审计、权限回滚与回合结束自动还原、写范围与同目录提示、长消息落盘、`spawn_key` 幂等、`since` 增量读；
   另有评审批次的用例：未回复时的补充消息接同一线程且不花预算、无关对端仍从 `hop=1` 起、
   入站 `msg` 可作 `since`（含消息表裁剪后仍可从收件表还原）、失败回滚写出 `permission_restore` 审计、
-  回滚写失败时**保留**那次提升的记录以便稍后补还（不会留下"已提升但无人可还原"的会话）。
+  回滚写失败时**保留**那次提升的记录以便稍后补还（不会留下"已提升但无人可还原"的会话）；
+  v0.6 的 `bus_threads` 异步返回 `state` / `peerRunning` / `lastMessageState` / `lastPreview`。
 - `test/plugin.test.mjs` —— 用假宿主**完整挂载插件**并真的调用全部工具，同时断言
   工具返回值不包含未声明的字段（宿主会按 `additionalProperties: false` 严格校验工具输出）；
   并钉住 `persistState` 到构造选项 `persist` 的接线（关掉时一个账本字节都不落盘，默认仍写）。
@@ -365,7 +388,8 @@ node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/
   接收端"以新信息为准"提示、消息深冻结与 source 字段（sender/thread/hop/messageId）、
   按日志与收件箱查重幂等、`bubble` 配置回退旧路径、没有 Agent API 的宿主自动回退、
   无 Session store 时只跳过 flush、Agent 解析失败报 `delivery_failed`；以及 notice 模式下 `bus_spawn`
-  用首行给新会话命名、重试命中的旧会话不改名、标题服务拒绝也不影响投递。
+  用首行给新会话命名、重试命中的旧会话不改名、标题服务拒绝也不影响投递；v0.6 的 `mode: "inbox"`
+  用 `agent.inject` 静默投递（无 `inject` 时回退普通唤醒），以及 `kind` 决定回答是否自动升级为 `interrupt`。
 
 ### 工具结果为什么由 schema 决定
 

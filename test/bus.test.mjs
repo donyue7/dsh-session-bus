@@ -260,3 +260,56 @@ test('a pushed message needs a sending Session', async () => {
   const bus = createBus(host);
   await assert.rejects(() => bus.send({ to: 'session-other002', message: 'hi', sender: {} }), /calling Session/);
 });
+
+test('max_hops raises this thread budget instead of forcing every send', async () => {
+  const host = createHost();
+  const bus = createBus(host, { maxHops: 2 });
+  const first = await bus.send({ to: 'session-other002', message: 'one', sender: senderA });
+  assert.equal(first.hop, 1);
+  const second = await bus.send({ to: 'session-main0001', message: 'two', sender: senderB });
+  assert.equal(second.hop, 2);
+  await assert.rejects(
+    () => bus.send({ to: 'session-other002', message: 'three', sender: senderA }),
+    /hop_budget_exhausted|hop 3, above its budget of 2/,
+  );
+  const raised = await bus.send({ to: 'session-other002', message: 'three', sender: senderA, maxHops: 4 });
+  assert.equal(raised.hop, 3);
+  assert.equal(raised.hopBudget, 4);
+  assert.equal(raised.hopRemaining, 1);
+});
+
+test('closing ends the thread, skips the hop budget, and tells the peer not to answer', async () => {
+  const host = createHost();
+  const bus = createBus(host, { maxHops: 1 });
+  await bus.send({ to: 'session-other002', message: 'one', sender: senderA });
+  const closing = await bus.send({ to: 'session-main0001', message: 'final answer', sender: senderB, closing: true });
+  assert.equal(closing.closing, true);
+  assert.equal(closing.hop, 2);
+  const envelope = parseEnvelope(host.delivered[1].content[0].text);
+  assert.equal(envelope.closing, true);
+  assert.ok(host.delivered[1].content[0].text.includes('closes the conversation'));
+  const threads = await bus.threads({ sender: senderA });
+  assert.equal(threads.total, 1);
+  assert.equal(threads.threads[0].closed, true);
+  assert.equal(threads.threads[0].awaitingReplyFrom, null);
+  assert.equal(threads.threads[0].state, 'closed');
+});
+
+test('new_thread starts an unrelated conversation at hop one', async () => {
+  const host = createHost();
+  const bus = createBus(host);
+  const first = await bus.send({ to: 'session-other002', message: 'one', sender: senderA });
+  const unrelated = await bus.send({ to: 'session-other002', message: 'different topic', sender: senderA, newThread: true });
+  assert.equal(unrelated.hop, 1);
+  assert.notEqual(unrelated.threadId, first.threadId);
+});
+
+test('an unknown kind is refused before delivery', async () => {
+  const host = createHost();
+  const bus = createBus(host);
+  await assert.rejects(
+    () => bus.send({ to: 'session-other002', message: 'x', sender: senderA, kind: 'bogus' }),
+    /unknown message kind "bogus"/,
+  );
+  assert.equal(host.delivered.length, 0);
+});
