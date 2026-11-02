@@ -23,6 +23,7 @@ DSH 会话总线插件：让**同一个工作区**或**不同工作区**的两�
   默认带 DSH 的 `agent-message` source，所以前端把它显示成**左侧「收到任务消息」卡片**而不是右侧气泡 ——
   让读的人一眼看出"这不是我自己发的"（想还原成右侧气泡可设 `inboundPresentation: bubble`）。
 - **可回复**：被推送方看到 `[session-bus v1] from=<会话id>`，用 `bus_send` 把结果发回源会话，源会话同样被唤醒。
+- **按模块分工（v0.8）**：一个工作区可以有「一个主会话 + 每个模块一个开发会话」，用 `bus_roles` 登记角色、`bus_task` 记账、`bus_attention` 让开发会话一次只问用户一个具体问题——人仍然只和主会话对话。
 
 ## 安装
 
@@ -238,6 +239,16 @@ A 算出结论时 B 可能还在跑。把结论排到 B 回合结束后就晚了
 `sha256` 必须是 64 位十六进制（用于校验内容没被改过）。回执会带 `payload` / `attachments`
 两个字段，方便发送方确认哪些东西真的发出去了。
 
+### 主会话与开发会话（v0.8）
+
+一个工作区里**人只和主会话对话**，主会话只做协调、把工作按模块派给开发会话。这是 v0.8 显式支持的工作方式（借鉴 DSH `dsh-superagent-prototype` 的注意力模型，但只取角色 / 任务 / 提问三件事，不做外部事件源、面板与 PR 跟随）：
+
+- **登记角色**：主会话 `bus_roles({ action: "register", role: "main" })`（每工作区唯一，`force` 可替换）；开发会话用 `bus_spawn({ role: "dev", module: "Gys_Frontend", preset: "dev-session" })` 一并注册。登记后任何会话都能 `bus_send({ to: "main" })`，不用猜 sessionId。真实会话永远优先——标题恰好叫 "Main" 的会话仍按名字投递，别名只在解析不到具体会话时生效。
+- **任务账本**：主会话 `bus_task({ action: "create", title: ... })` 开任务；开发会话开工前 `claim`，进展/结论用 `update` 汇报；`ready` 是"已完成"的声明，必须带 `evidence`（命令 + 结果、提交、链接）——"改动存在"不等于"工作完成"。`bus_task({ action: "list", mine: true })` 让每个会话看到自己的活。
+- **一次一个问题**：开发会话被真人决策阻塞时 `bus_attention({ action: "ask", task_id, question, options, recommendation })`；插件把问题转发给主会话，主会话原样转述给人，用户决定由主会话 `answer` 记回，被阻塞任务自动恢复 `in_progress`。不要把多个问题塞进一条，也不要用它报进度。
+- **配套预设**：`dsh-workspace-workflow` bundle 提供 `main-session`（只协调：不写文件、不跑命令）与 `dev-session`（完整开发工具 + 子代理/后台任务）两个预设，`bus_spawn({ preset: "main-session" })` 直接可用。
+- 角色 / 任务 / 提问都落在 `<DSH_HOME>/session-bus/state.json`（`version: 3`），重启不丢；审计日志记 `role` / `task` / `attention`。
+
 ### 权限：为什么推送会把目标会话提到调用方的等级
 
 DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh` 子进程起不来
@@ -284,7 +295,10 @@ DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh`
 | `bus_find` | **按对话内容**找"该问谁"：检索全部工作区会话的全文，返回少数几个真正讨论过该话题的候选 + 命中片段 + 是否同目录 / 已有线程；只读，**不唤醒任何人**；结果带 `ambiguous` / `nextStep`，分不清时明确要求交给用户决定 |
 | `bus_send` | 把消息推入目标会话并唤醒它（`mode: queue` 排队 / `steer` 立即插入 / **`interrupt` 结论插队：目标在跑时插入当前回合，空闲时正常唤醒** / **`inbox` 静默投递不唤醒**；回答对方自己的消息会自动升级为 `interrupt`，显式 `mode: queue` 可关闭单条升级，`kind` 可精确控制哪类回答才升级）；默认以 `agent-message` source 投递，接收方看到左侧「收到任务消息」卡片（`inboundPresentation: bubble` 则退回右侧气泡）；可带 `thread` / `reply_to` / `write_scopes` / `elevate` / **`kind`** / **`max_hops`** / **`new_thread`** / **`closing`** / **`payload`** / **`attachments`** |
 | `bus_read` | 读取目标会话最近的对话尾部（**不会**唤醒对方）；`since` 支持只取增量（可传**最近一条**入站信封上的 `msg=`，也可传 ISO 时间或毫秒时间戳；消息表裁剪后仍可由收件表还原） |
-| `bus_spawn` | 在指定工作区新建会话并把首条消息投进去；`spawn_key` 保证重试不会多建会话 |
+| `bus_spawn` | 在指定工作区新建会话并把首条消息投进去；`spawn_key` 保证重试不会多建会话；v0.8 起可用 `preset` 指定 agent 预设（主会话用 `main-session`）、`role: main/dev` 一步注册角色、`module` 标模块归属、`force` 替换已有主会话 |
+| `bus_roles` | **v0.8 角色注册表**：`register` 把会话登记为 `main`（每工作区唯一）或 `dev`（可带 `module`）；`list` 查看谁是谁、是否在跑、是否可投递；`clear` 注销。登记后 `bus_send({ to: "main" })` 永远能找到协调者 |
+| `bus_task` | **v0.8 任务账本**：`create` 开任务、`claim` 认领（→ `in_progress`）、`update` 报进度/`ready`（必须带 `evidence`）/`done`、`list` 看活动任务（`mine: true` 只看自己的）、`get` 看详情 |
+| `bus_attention` | **v0.8 结构化提问**：`ask` 一次一个问题 + 有界 `options` + `recommendation`，自动转发给主会话转述用户；`answer` 记录用户决定并让被阻塞任务恢复；`list` / `cancel` |
 | `bus_threads` | 列出你的会话线程与各自"欠谁一条回复"，替代反复 `bus_read` 猜进度；v0.6 起还给出线程 `state`、`peerRunning`、最后一条的 `lastMessageState`（queued/consumed/unknown）、`lastKind`、`lastPreview`、`lastAgeMinutes` |
 | `bus_lease` | 为共享目录里的文件/目录 claim 一把写租约（默认 30 分钟自动过期）；与别的 Session 重叠时返回冲突列表，提示先协商而不是硬写；`force` 只在用户明确要求时用 |
 | `bus_release` | 释放自己的写租约（指定 `lease` 或全部）；完成编辑后立刻释放，让下一个写者进入 |
@@ -311,12 +325,16 @@ DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh`
   不要自己挑，也不要 `bus_spawn` 新建会话"。只有**唯一明确命中**（`ambiguous: false`）时才允许直接
   `bus_send`。这条规则同时写进了系统提示词，所有会话生效——不是靠调用方自觉。
 
+注意：v0.8 的角色 / 任务 / 提问（见「主会话与开发会话」）不是对这条原则的否定。默认仍是谁都能直接
+`bus_send` 到任意会话；登记角色只是**在你选择**「一个主会话 + 多个开发会话」的组织方式时，给
+`to: "main"` 一个稳定含义，并让任务进度与"等人回答的问题"有一处可查的事实，而不是散落在各会话的对话里。
+
 ## 消息协议
 
 投递出去的消息是一条 `user` 角色消息（默认 source.kind = `agent-message`），首行是机器可解析的包头：
 
 ```
-[session-bus v1] from=session-abc hop=1/8 msg=1f0c9a2b re=9d3c11 thread=t-4a7b21c9
+[session-bus v1] from=session-abc hop=1/16 msg=1f0c9a2b re=9d3c11 thread=t-4a7b21c9
 from-title: 修复解析器
 from-cwd: C:\work\project-a
 sent-at: 2026-10-16T05:10:04.000Z
@@ -383,12 +401,12 @@ Answer with the bus_send tool: bus_send({ to: "session-abc", message: "<your res
 
 ```powershell
 cd dsh-session-bus
-node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/find.test.mjs test/toolkit.test.mjs test/config.test.mjs test/threads.test.mjs test/plugin.test.mjs test/presentation.test.mjs test/leases.test.mjs
+node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/find.test.mjs test/toolkit.test.mjs test/config.test.mjs test/threads.test.mjs test/plugin.test.mjs test/presentation.test.mjs test/leases.test.mjs test/coordination.test.mjs
 ```
 
 （Node 24 下 `node --test test/` 会因目录解析报 `MODULE_NOT_FOUND`，所以逐个列出文件。）
 
-151 个用例，全部不依赖 DSH 运行时（v0.6 新增 `max_hops` / `closing` / `new_thread` / `inbox` / `kind` / 线程状态等用例；v0.7 新增写租约与结构化 `payload` / `attachments` 用例）：
+162 个用例，全部不依赖 DSH 运行时（v0.6 新增 `max_hops` / `closing` / `new_thread` / `inbox` / `kind` / 线程状态等用例；v0.7 新增写租约与结构化 `payload` / `attachments` 用例；v0.8 新增角色 / 任务 / 提问账本用例）：
 
 - `test/envelope.test.mjs` —— 包头渲染/解析、多行正文、恶意输入；v0.6 的 `kind`/`closing` 元数据、
   收线信封省略回复指示、剩余跳数告警、queue 消息的"写入时间≠送达时间"提醒，以及 parse 往返；
@@ -414,6 +432,12 @@ node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/
 - `test/leases.test.mjs` —— v0.7 写租约：路径归一化（相对/绝对、Windows 大小写折叠）、目录覆盖子路径、
   冲突检测与 force 强占（不删除原 lease）、相同 roots 续期、过期后不再阻塞、release 单个/全部、
   `toJSON`/`restore` 往返；以及 bus 层 `bus_lease` / `bus_release` / `bus_leases` 契约、ttl clamp 与错误码。
+- `test/coordination.test.mjs` —— v0.8 角色 / 任务 / 提问：`samePath` 归一化、`RoleRegistry` 每工作区唯一
+  main 与 `main_exists` / `force` 替换 / dev 模块归属、`TaskLedger` 的 claim → blocked → ready（必须
+  evidence）→ done 状态机与 `task_owned` / `task_closed` / `empty_update` 错误码、`AttentionLedger` 提问
+  阻塞任务 / 回答后恢复 / 关闭后拒绝再答；以及 bus 层 `bus_roles` / `bus_task` / `bus_attention` 契约、
+  `to: "main"` 路由（真实会话优先、无主会话报 `no_main`）、`bus_spawn` 的 `preset` / `role` / `module`
+  与第二个 main 的拒绝。
 - `test/plugin.test.mjs` —— 用假宿主**完整挂载插件**并真的调用全部工具，同时断言
   工具返回值不包含未声明的字段（宿主会按 `additionalProperties: false` 严格校验工具输出）；
   并钉住 `persistState` 到构造选项 `persist` 的接线（关掉时一个账本字节都不落盘，默认仍写）。
@@ -439,7 +463,8 @@ node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/
 ```
 lib/index.js      Cordis 插件入口（name / inject / apply）
 lib/bus.js        核心：列举、寻址、投递、读取、新建；跳数跟踪与审计
-lib/tools.js      九个工具定义（原始 JSON Schema）
+lib/coordination.js  v0.8 角色 / 任务 / 提问账本：main/dev 注册、任务状态机、attention 阻塞与解除
+lib/tools.js      十二个工具定义（原始 JSON Schema）
 lib/leases.js     写租约账本：路径归一化、冲突检测、过期清理
 lib/toolkit.js    零依赖的 defineTool：参数校验 + 按 output.schema 投影结果
 lib/envelope.js   消息包头渲染/解析
