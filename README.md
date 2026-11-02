@@ -131,6 +131,9 @@ Node 按**解析后的真实路径**缓存 ES 模块，所以宿主只会执行�
     allowSelf: false            # 禁止发给自己
     maxHops: 16                 # 往返跳数预算，防互踢（一轮真实问答约 3 跳；长线程用 max_hops 提升）
     maxMessageChars: 20000      # 单条消息字符上限
+    leaseTtlMinutes: 30          # 写租约默认存活 30 分钟（1..480，到期自动失效）
+    maxPayloadChars: 8000        # 结构化 payload 的 JSON 字符上限
+    maxAttachments: 16           # 单条消息附件上限
     defaultMode: queue           # queue | steer | interrupt（结论插队）| inbox（静默投递不唤醒）
     interruptReplies: true       # 回答对方自己的消息时，若对方在跑则自动升级为 interrupt
     inboundPresentation: notice  # notice（左侧通知卡）| bubble（右侧用户气泡）
@@ -211,6 +214,30 @@ A 算出结论时 B 可能还在跑。把结论排到 B 回合结束后就晚了
   `lastAgeMinutes`——`queued` ≠ 对方已处理，别把"已送达"当"已读"。
 - **旧消息**：信封的 `sent-at` 是**写入时间**，不一定是送达时间；排队很久的消息会附带提醒，先核对当前状态再行动。
 
+### 写租约与结构化交接（v0.7）
+
+同一个工作目录里往往不止一个会话在写代码。`write_scopes` 只是"我要碰这些文件"的声明，
+没有排他性；v0.7 增加了跨会话可见的写租约（lease），把"谁在写哪里"变成可协商的事实：
+
+- **先 claim 再编辑**：`bus_lease({ paths: ["src/api", "package.json"], note: "正在改接口" })`。
+  `paths` 可以是文件或目录（目录覆盖其下所有文件），相对路径按调用方 cwd 解析，最多 20 条。
+  成功返回 `leaseId`、`expiresAt`、`expiresInMinutes`；租约默认存活 `leaseTtlMinutes: 30` 分钟，
+  到期自动失效——对方崩了也不会永久占着不放。
+- **冲突时不要硬来**：与另一个 Session 的覆盖路径重叠时 `granted: false`，`conflicts` 列出
+  对方 lease 的 `leaseId`/`sessionId`/`paths`/`expiresInMinutes`/`note`。正确做法是 `bus_send`
+  和对方协商、等它释放或等租约过期；`force: true` 只在用户明确要求时用。
+- **完成即释放**：`bus_release({ lease: "<leaseId>" })`，省略 `lease` 则释放自己的全部。
+- **看谁在写**：`bus_leases()` 列出当前有效租约（`mine` 标记自己、`expired` 标记过期），
+  `workspace` 参数按目录过滤，`include_expired: true` 连过期的一起看。
+- 租约落在 `<DSH_HOME>/session-bus/state.json`（`version: 2`），重启不丢；审计日志记 `lease`/`release`。
+
+结论、清单这类"机器要读"的交接不必塞进正文：`bus_send({ payload: { ... } })` 会渲染成
+信封里的 `--- payload ---` 段（JSON，≤ `maxPayloadChars` 字符），接收方拿到的是结构化对象。
+交付文件用 `attachments: [{ path, sha256, note }]`——信封里的 `--- attachments ---` 只写
+路径/摘要/说明，对方按路径自己读文件，长内容不用在消息里搬运；相对路径按发送方 cwd 解析，
+`sha256` 必须是 64 位十六进制（用于校验内容没被改过）。回执会带 `payload` / `attachments`
+两个字段，方便发送方确认哪些东西真的发出去了。
+
 ### 权限：为什么推送会把目标会话提到调用方的等级
 
 DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh` 子进程起不来
@@ -255,10 +282,13 @@ DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh`
 | --- | --- |
 | `bus_list` | 列出可达会话：`sessionId`、标题、工作目录、忙/闲、能否投递、**是否与你同工作目录**；支持 `offset` / `updated_within_minutes` / `active_only` |
 | `bus_find` | **按对话内容**找"该问谁"：检索全部工作区会话的全文，返回少数几个真正讨论过该话题的候选 + 命中片段 + 是否同目录 / 已有线程；只读，**不唤醒任何人**；结果带 `ambiguous` / `nextStep`，分不清时明确要求交给用户决定 |
-| `bus_send` | 把消息推入目标会话并唤醒它（`mode: queue` 排队 / `steer` 立即插入 / **`interrupt` 结论插队：目标在跑时插入当前回合，空闲时正常唤醒** / **`inbox` 静默投递不唤醒**；回答对方自己的消息会自动升级为 `interrupt`，显式 `mode: queue` 可关闭单条升级，`kind` 可精确控制哪类回答才升级）；默认以 `agent-message` source 投递，接收方看到左侧「收到任务消息」卡片（`inboundPresentation: bubble` 则退回右侧气泡）；可带 `thread` / `reply_to` / `write_scopes` / `elevate` / **`kind`** / **`max_hops`** / **`new_thread`** / **`closing`** |
+| `bus_send` | 把消息推入目标会话并唤醒它（`mode: queue` 排队 / `steer` 立即插入 / **`interrupt` 结论插队：目标在跑时插入当前回合，空闲时正常唤醒** / **`inbox` 静默投递不唤醒**；回答对方自己的消息会自动升级为 `interrupt`，显式 `mode: queue` 可关闭单条升级，`kind` 可精确控制哪类回答才升级）；默认以 `agent-message` source 投递，接收方看到左侧「收到任务消息」卡片（`inboundPresentation: bubble` 则退回右侧气泡）；可带 `thread` / `reply_to` / `write_scopes` / `elevate` / **`kind`** / **`max_hops`** / **`new_thread`** / **`closing`** / **`payload`** / **`attachments`** |
 | `bus_read` | 读取目标会话最近的对话尾部（**不会**唤醒对方）；`since` 支持只取增量（可传**最近一条**入站信封上的 `msg=`，也可传 ISO 时间或毫秒时间戳；消息表裁剪后仍可由收件表还原） |
 | `bus_spawn` | 在指定工作区新建会话并把首条消息投进去；`spawn_key` 保证重试不会多建会话 |
 | `bus_threads` | 列出你的会话线程与各自"欠谁一条回复"，替代反复 `bus_read` 猜进度；v0.6 起还给出线程 `state`、`peerRunning`、最后一条的 `lastMessageState`（queued/consumed/unknown）、`lastKind`、`lastPreview`、`lastAgeMinutes` |
+| `bus_lease` | 为共享目录里的文件/目录 claim 一把写租约（默认 30 分钟自动过期）；与别的 Session 重叠时返回冲突列表，提示先协商而不是硬写；`force` 只在用户明确要求时用 |
+| `bus_release` | 释放自己的写租约（指定 `lease` 或全部）；完成编辑后立刻释放，让下一个写者进入 |
+| `bus_leases` | 列出当前有效写租约：谁、在哪个工作区、占了哪些路径、还剩多少分钟、是否自己；过期租约不再阻塞别人 |
 
 目标寻址支持：完整 `sessionId`、唯一 id 前缀、唯一标题、唯一工作目录片段、`self`。
 **有歧义时报错并列出候选，绝不猜**。
@@ -353,19 +383,22 @@ Answer with the bus_send tool: bus_send({ to: "session-abc", message: "<your res
 
 ```powershell
 cd dsh-session-bus
-node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/find.test.mjs test/toolkit.test.mjs test/config.test.mjs test/threads.test.mjs test/plugin.test.mjs test/presentation.test.mjs
+node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/find.test.mjs test/toolkit.test.mjs test/config.test.mjs test/threads.test.mjs test/plugin.test.mjs test/presentation.test.mjs test/leases.test.mjs
 ```
 
 （Node 24 下 `node --test test/` 会因目录解析报 `MODULE_NOT_FOUND`，所以逐个列出文件。）
 
-131 个用例，全部不依赖 DSH 运行时（v0.6 新增 `max_hops` / `closing` / `new_thread` / `inbox` / `kind` / 线程状态等用例）：
+151 个用例，全部不依赖 DSH 运行时（v0.6 新增 `max_hops` / `closing` / `new_thread` / `inbox` / `kind` / 线程状态等用例；v0.7 新增写租约与结构化 `payload` / `attachments` 用例）：
 
 - `test/envelope.test.mjs` —— 包头渲染/解析、多行正文、恶意输入；v0.6 的 `kind`/`closing` 元数据、
-  收线信封省略回复指示、剩余跳数告警、queue 消息的"写入时间≠送达时间"提醒，以及 parse 往返。
+  收线信封省略回复指示、剩余跳数告警、queue 消息的"写入时间≠送达时间"提醒，以及 parse 往返；
+  v0.7 的 `--- payload ---` / `--- attachments ---` 段渲染与解析、未发送时不出现对应键、坏 JSON 不致命。
 - `test/resolve.test.mjs` —— 目标寻址的每一级、歧义拒绝、工作区匹配。
 - `test/bus.test.mjs` —— 用假宿主验证：投递请求、跳数递增、跨区策略、自投递拒绝、长度上限、
   subagent 拒绝、`bus_spawn`、`bus_read`、投递失败的错误信息；v0.6 的 `max_hops` 只提升本线程预算、
-  `closing` 收线并豁免跳数预算、`new_thread` 从 hop 1 起、未知 `kind` 在投递前拒绝。
+  `closing` 收线并豁免跳数预算、`new_thread` 从 hop 1 起、未知 `kind` 在投递前拒绝；
+  v0.7 的 `payload` / `attachments` 投递与回执字段，以及非法 `payload` / 超长 `payload` /
+  坏 `attachments`（非数组、坏 sha256、超额）在投递前拒绝。
 - `test/find.test.mjs` —— v0.3 的路由：全文索引命中、只保留可投递会话（排除自己/subagent/看不见的）、
   已有线程标记、候选数截断、无索引时退化为标题匹配、检索后端报错不致命、空问题返回 `empty_query`、
   工具结果与声明 schema 一致且**不唤醒任何会话**；以及**歧义策略**：多个同等候选 / 索引无真实命中 /
@@ -378,6 +411,9 @@ node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/
   入站 `msg` 可作 `since`（含消息表裁剪后仍可从收件表还原）、失败回滚写出 `permission_restore` 审计、
   回滚写失败时**保留**那次提升的记录以便稍后补还（不会留下"已提升但无人可还原"的会话）；
   v0.6 的 `bus_threads` 异步返回 `state` / `peerRunning` / `lastMessageState` / `lastPreview`。
+- `test/leases.test.mjs` —— v0.7 写租约：路径归一化（相对/绝对、Windows 大小写折叠）、目录覆盖子路径、
+  冲突检测与 force 强占（不删除原 lease）、相同 roots 续期、过期后不再阻塞、release 单个/全部、
+  `toJSON`/`restore` 往返；以及 bus 层 `bus_lease` / `bus_release` / `bus_leases` 契约、ttl clamp 与错误码。
 - `test/plugin.test.mjs` —— 用假宿主**完整挂载插件**并真的调用全部工具，同时断言
   工具返回值不包含未声明的字段（宿主会按 `additionalProperties: false` 严格校验工具输出）；
   并钉住 `persistState` 到构造选项 `persist` 的接线（关掉时一个账本字节都不落盘，默认仍写）。
@@ -403,7 +439,8 @@ node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/
 ```
 lib/index.js      Cordis 插件入口（name / inject / apply）
 lib/bus.js        核心：列举、寻址、投递、读取、新建；跳数跟踪与审计
-lib/tools.js      六个工具定义（原始 JSON Schema）
+lib/tools.js      九个工具定义（原始 JSON Schema）
+lib/leases.js     写租约账本：路径归一化、冲突检测、过期清理
 lib/toolkit.js    零依赖的 defineTool：参数校验 + 按 output.schema 投影结果
 lib/envelope.js   消息包头渲染/解析
 lib/resolve.js    纯函数：会话与工作区寻址

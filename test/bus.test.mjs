@@ -313,3 +313,52 @@ test('an unknown kind is refused before delivery', async () => {
   );
   assert.equal(host.delivered.length, 0);
 });
+
+test('structured payload and file attachments ride inside the envelope', async () => {
+  const host = createHost();
+  const bus = createBus(host);
+  const hash = 'b'.repeat(64);
+  const receipt = await bus.send({
+    to: 'session-other002',
+    message: 'landed the fix',
+    payload: { commit: 'abc123', tests: 131 },
+    attachments: [
+      { path: 'report.md', sha256: hash, note: 'test report' },
+      { path: 'C:\\work\\a\\data.json' },
+    ],
+    sender: senderA,
+  });
+  assert.equal(receipt.delivered, true);
+  assert.equal(receipt.payload, true);
+  assert.equal(receipt.attachments, 2);
+  const envelope = parseEnvelope(host.delivered[0].content[0].text);
+  assert.deepEqual(envelope.payload, { commit: 'abc123', tests: 131 });
+  assert.deepEqual(envelope.attachments, [
+    { path: 'C:\\work\\a\\report.md', sha256: hash, note: 'test report' },
+    { path: 'C:\\work\\a\\data.json' },
+  ]);
+});
+
+test('payload size and attachment shapes are validated before delivery', async () => {
+  const bus = createBus(createHost());
+  await assert.rejects(
+    () => bus.send({ to: 'session-other002', message: 'x', payload: [], sender: senderA }),
+    /\[invalid_payload\]/,
+  );
+  await assert.rejects(
+    () => bus.send({ to: 'session-other002', message: 'x', payload: { big: 'x'.repeat(9000) }, sender: senderA }),
+    /\[payload_too_large\]/,
+  );
+  await assert.rejects(
+    () => bus.send({ to: 'session-other002', message: 'x', attachments: 'nope', sender: senderA }),
+    /\[invalid_attachments\]/,
+  );
+  await assert.rejects(
+    () => bus.send({ to: 'session-other002', message: 'x', attachments: [{ path: 'a', sha256: 'zzz' }], sender: senderA }),
+    /\[invalid_attachments\]/,
+  );
+  await assert.rejects(
+    () => bus.send({ to: 'session-other002', message: 'x', attachments: Array.from({ length: 17 }, () => ({ path: 'a' })), sender: senderA }),
+    /\[invalid_attachments\]/,
+  );
+});

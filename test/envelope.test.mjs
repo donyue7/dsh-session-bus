@@ -88,3 +88,38 @@ test('renderEnvelope warns about a low hop budget and about queued staleness', (
   assert.ok(interrupt.includes('This message is an interrupt (correction):'));
   assert.equal(parseEnvelope(interrupt).mode, 'interrupt');
 });
+
+test('renderEnvelope writes payload and attachments sections that parse back', () => {
+  const hash = 'a'.repeat(64);
+  const payload = { commit: 'abc123', amount: 42, files: ['a.js'] };
+  const attachments = [
+    { path: 'C:\\\\work\\\\project-a\\\\report.md', sha256: hash, note: 'summary' },
+    { path: 'C:\\\\work\\\\project-a\\\\data.json' },
+  ];
+  const text = renderEnvelope({ ...base, payload, attachments });
+  assert.ok(text.includes('--- payload ---'));
+  assert.ok(text.includes('"commit": "abc123"'));
+  assert.ok(text.includes('--- attachments ---'));
+  assert.ok(text.includes(`- C:\\\\work\\\\project-a\\\\report.md (sha256: ${hash}) — summary`));
+  assert.ok(text.includes('- C:\\\\work\\\\project-a\\\\data.json'));
+
+  const parsed = parseEnvelope(text);
+  assert.deepEqual(parsed.payload, payload);
+  assert.equal(parsed.attachments.length, 2);
+  assert.deepEqual(parsed.attachments[0], { path: 'C:\\\\work\\\\project-a\\\\report.md', sha256: hash, note: 'summary' });
+  assert.deepEqual(parsed.attachments[1], { path: 'C:\\\\work\\\\project-a\\\\data.json' });
+  assert.equal(parsed.body, base.text);
+});
+
+test('payload and attachments stay absent when the sender did not include them', () => {
+  const parsed = parseEnvelope(renderEnvelope(base));
+  assert.equal('payload' in parsed, false);
+  assert.equal('attachments' in parsed, false);
+});
+
+test('a malformed payload section does not break the readable message', () => {
+  const text = renderEnvelope(base).replace('--- reply ---', '--- payload ---\nnot json\n--- reply ---');
+  const parsed = parseEnvelope(text);
+  assert.equal(parsed.body, base.text);
+  assert.equal('payload' in parsed, false);
+});

@@ -88,12 +88,22 @@ test('the plugin module is self-contained and exports the Cordis shape', () => {
   assert.equal(typeof apply, 'function');
 });
 
-test('apply registers six tools and one prompt section', () => {
+test('apply registers nine tools and one prompt section', () => {
   const ctx = createFakeContext();
   apply(ctx, { audit: false, persistState: false });
   assert.deepEqual(
     ctx.registered.map((tool) => tool.name).sort(),
-    ['bus_find', 'bus_list', 'bus_read', 'bus_send', 'bus_spawn', 'bus_threads'],
+    [
+      'bus_find',
+      'bus_lease',
+      'bus_leases',
+      'bus_list',
+      'bus_read',
+      'bus_release',
+      'bus_send',
+      'bus_spawn',
+      'bus_threads',
+    ],
   );
   for (const tool of ctx.registered) {
     assert.equal(typeof tool.description, 'string');

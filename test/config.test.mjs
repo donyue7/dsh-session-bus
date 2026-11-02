@@ -88,3 +88,19 @@ test('valid bounds are kept, including the edges', () => {
   assert.equal(config.defaultMode, 'steer');
   assert.equal(config.audit, false);
 });
+
+test('write leases and structured messages have documented defaults', () => {
+  assert.equal(DEFAULT_CONFIG.leaseTtlMinutes, 30);
+  assert.equal(DEFAULT_CONFIG.maxPayloadChars, 8000);
+  assert.equal(DEFAULT_CONFIG.maxAttachments, 16);
+  assert.equal(normalizeConfig({}).leaseTtlMinutes, 30);
+  assert.equal(normalizeConfig({ leaseTtlMinutes: 2 }).leaseTtlMinutes, 2);
+  assert.equal(normalizeConfig({ leaseTtlMinutes: 0 }).leaseTtlMinutes, 30);
+  assert.equal(normalizeConfig({ leaseTtlMinutes: 10000 }).leaseTtlMinutes, 30);
+  assert.equal(normalizeConfig({ maxPayloadChars: 100 }).maxPayloadChars, 100);
+  assert.equal(normalizeConfig({ maxPayloadChars: 0 }).maxPayloadChars, 8000);
+  assert.equal(normalizeConfig({ maxPayloadChars: 10 ** 9 }).maxPayloadChars, 8000);
+  assert.equal(normalizeConfig({ maxAttachments: 0 }).maxAttachments, 0);
+  assert.equal(normalizeConfig({ maxAttachments: 100 }).maxAttachments, 16);
+  assert.equal(normalizeConfig({ maxAttachments: 'many' }).maxAttachments, 16);
+});
