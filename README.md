@@ -248,6 +248,7 @@ A 算出结论时 B 可能还在跑。把结论排到 B 回合结束后就晚了
 - **一次一个问题**：开发会话被真人决策阻塞时 `bus_attention({ action: "ask", task_id, question, options, recommendation })`；插件把问题转发给主会话，主会话原样转述给人，用户决定由主会话 `answer` 记回，被阻塞任务自动恢复 `in_progress`。不要把多个问题塞进一条，也不要用它报进度。
 - **配套预设**：`dsh-workspace-workflow` bundle 提供 `main-session`（只协调：不写文件、不跑命令）与 `dev-session`（完整开发工具 + 子代理/后台任务）两个预设，`bus_spawn({ preset: "main-session" })` 直接可用。
 - 角色 / 任务 / 提问都落在 `<DSH_HOME>/session-bus/state.json`（`version: 3`），重启不丢；审计日志记 `role` / `task` / `attention`。
+- **常驻提示段开销（v0.8.1）**：注入每个会话系统提示的 session-bus 段落从约 11.2K 字符（≈2.8K tokens）精简到约 6.1K 字符（≈1.5K tokens，-46%）；工具清单与全部行为规则逐条保留，只压缩措辞。这段是稳定前缀，正常会命中 prompt cache。
 
 ### 权限：为什么推送会把目标会话提到调用方的等级
 
