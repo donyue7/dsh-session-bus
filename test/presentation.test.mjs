@@ -352,6 +352,64 @@ test('answering the peer\'s own message is upgraded to an interrupt while it run
   assert.match(receipt.note, /answered the target's own message/);
 });
 
+test('a correction reaches a running peer mid-turn even without a reply anchor', async () => {
+  const host = createHost();
+  host.agent.status = 'running';
+  const bus = createBus(host);
+
+  const receipt = await bus.send({
+    to: 'Other',
+    message: 'stop: use the v2 schema, not v1',
+    kind: 'correction',
+    sender: senderA,
+  });
+
+  assert.equal(receipt.mode, 'interrupt');
+  assert.equal(receipt.interrupted, true);
+  assert.equal(host.inbox.nextStep.length, 1);
+  assert.equal(host.inbox.nextTurn.length, 0);
+  assert.match(receipt.note, /is a correction/);
+});
+
+test('a correction with an explicit queue mode still waits for the turn', async () => {
+  const host = createHost();
+  host.agent.status = 'running';
+  const bus = createBus(host);
+
+  const receipt = await bus.send({
+    to: 'Other', message: 'later: v2 schema', kind: 'correction', mode: 'queue', sender: senderA,
+  });
+
+  assert.equal(receipt.mode, 'queue');
+  assert.equal(receipt.interrupted, false);
+  assert.equal(host.inbox.nextTurn.length, 1);
+});
+
+test('only a correction cuts in on its own; a plain conclusion still queues', async () => {
+  const host = createHost();
+  host.agent.status = 'running';
+  const bus = createBus(host);
+
+  const receipt = await bus.send({ to: 'Other', message: 'the migration finished', kind: 'conclusion', sender: senderA });
+
+  assert.equal(receipt.mode, 'queue');
+  assert.equal(receipt.interrupted, false);
+  assert.equal(host.inbox.nextTurn.length, 1);
+});
+
+test('a correction to an idle peer wakes it like queue instead of parking a step', async () => {
+  const host = createHost();
+  assert.equal(host.agent.status, 'idle');
+  const bus = createBus(host);
+
+  const receipt = await bus.send({ to: 'Other', message: 'use v2', kind: 'correction', sender: senderA });
+
+  assert.equal(receipt.mode, 'interrupt');
+  assert.equal(receipt.interrupted, false);
+  assert.equal(host.inbox.nextTurn.length, 1);
+  assert.equal(host.inbox.nextStep.length, 0);
+});
+
 test('the automatic interrupt upgrade can be disabled or opted out', async () => {
   // interruptReplies: false keeps the old queue behaviour.
   const quiet = createHost();
