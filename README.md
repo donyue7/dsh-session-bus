@@ -135,6 +135,8 @@ Node 按**解析后的真实路径**缓存 ES 模块，所以宿主只会执行�
     leaseTtlMinutes: 30          # 写租约默认存活 30 分钟（1..480，到期自动失效）
     maxPayloadChars: 8000        # 结构化 payload 的 JSON 字符上限
     maxAttachments: 16           # 单条消息附件上限
+    whenBusyPreset: dev-session  # when_busy: "spawn" 派生 worker 时用的 agent 预设
+    maxWorkers: 8                # 每个工作区同时存在的 worker 上限（0 = 不限，超出回落 queue）
     defaultMode: queue           # queue | steer | interrupt（结论插队）| inbox（静默投递不唤醒）
     interruptReplies: true       # 回答对方消息或 kind=correction 时，若对方在跑则自动升级为 interrupt
     inboundPresentation: notice  # notice（左侧通知卡）| bubble（右侧用户气泡）
@@ -252,6 +254,19 @@ A 算出结论时 B 可能还在跑。把结论排到 B 回合结束后就晚了
 - 角色 / 任务 / 提问都落在 `<DSH_HOME>/session-bus/state.json`（`version: 3`），重启不丢；审计日志记 `role` / `task` / `attention`。
 - **常驻提示段开销（v0.8.1）**：注入每个会话系统提示的 session-bus 段落从约 11.2K 字符（≈2.8K tokens）精简到约 6.1K 字符（≈1.5K tokens，-46%）；工具清单与全部行为规则逐条保留，只压缩措辞。这段是稳定前缀，正常会命中 prompt cache。
 
+### 并行任务：忙时派生 worker（v0.9）
+
+主会话一次安排几个任务时，如果都发给同一个开发会话，后面的只能排队——一个会话的一个回合只能做一件事。
+v0.9 给 `bus_send` 加了 `when_busy`：
+
+- **`when_busy: "queue"`（默认）**：目标忙时照旧排队。
+- **`when_busy: "spawn"`**：目标正在跑就**另开一个 worker 会话**（`whenBusyPreset`，默认 `dev-session`），把任务作为它的第一条消息投进去；原目标完全不被打断，继续做完手上的活。worker 的首条消息写明派发者、原目标、模块和回报方式；完成后它用 `bus_send({ to: "<派发者>", kind: "conclusion", closing: true })` 回报，需要真人决定时用 `bus_attention`。
+- **worker 会被进度 chip 统计**：worker 注册为 `dev` 角色并带 `worker: true`，主会话头部的「N 个开发会话推进中」自动包含它。
+- **去重**：`spawn_key` 由派发者、原目标和任务正文哈希得出，重试同一条任务会复用同一个 worker，不会重复开。
+- **上限**：`maxWorkers`（默认 8，0 = 不限）按工作区限制同时存在的 worker 数量；到上限后自动回落为 `queue`，回执 `whenBusy: "queue"` 并在 `note` 里说明。
+- **约束**：`allowSpawn: false` 时直接拒绝（`spawn_disabled`）；目标空闲时不派生 worker，照常直接投递。
+- 回执新增 `whenBusy`、`worker: { sessionId, preset, module, title }`、`handedOffFrom: { sessionId, title }`。
+
 ### 权限：为什么推送会把目标会话提到调用方的等级
 
 DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh` 子进程起不来
@@ -296,7 +311,7 @@ DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh`
 | --- | --- |
 | `bus_list` | 列出可达会话：`sessionId`、标题、工作目录、忙/闲、能否投递、**是否与你同工作目录**；支持 `offset` / `updated_within_minutes` / `active_only` |
 | `bus_find` | **按对话内容**找"该问谁"：检索全部工作区会话的全文，返回少数几个真正讨论过该话题的候选 + 命中片段 + 是否同目录 / 已有线程；只读，**不唤醒任何人**；结果带 `ambiguous` / `nextStep`，分不清时明确要求交给用户决定 |
-| `bus_send` | 把消息推入目标会话并唤醒它（`mode: queue` 排队 / `steer` 立即插入 / **`interrupt` 结论插队：目标在跑时插入当前回合，空闲时正常唤醒** / **`inbox` 静默投递不唤醒**；回答对方自己的消息、以及 `kind: "correction"` 的发送（v0.8.2 起，无需 `re=`）会自动升级为 `interrupt`，显式 `mode: queue` 可关闭单条升级）；默认以 `agent-message` source 投递，接收方看到左侧「收到任务消息」卡片（`inboundPresentation: bubble` 则退回右侧气泡）；可带 `thread` / `reply_to` / `write_scopes` / `elevate` / **`kind`** / **`max_hops`** / **`new_thread`** / **`closing`** / **`payload`** / **`attachments`** |
+| `bus_send` | 把消息推入目标会话并唤醒它（`mode: queue` 排队 / `steer` 立即插入 / **`interrupt` 结论插队：目标在跑时插入当前回合，空闲时正常唤醒** / **`inbox` 静默投递不唤醒**；回答对方自己的消息、以及 `kind: "correction"` 的发送（v0.8.2 起，无需 `re=`）会自动升级为 `interrupt`，显式 `mode: queue` 可关闭单条升级）；默认以 `agent-message` source 投递，接收方看到左侧「收到任务消息」卡片（`inboundPresentation: bubble` 则退回右侧气泡）；可带 `thread` / `reply_to` / `write_scopes` / `elevate` / **`kind`** / **`max_hops`** / **`new_thread`** / **`closing`** / **`payload`** / **`attachments`** / **`when_busy`**（v0.9：忙时 `"spawn"` 另开 worker 会话而不是排队） |
 | `bus_read` | 读取目标会话最近的对话尾部（**不会**唤醒对方）；`since` 支持只取增量（可传**最近一条**入站信封上的 `msg=`，也可传 ISO 时间或毫秒时间戳；消息表裁剪后仍可由收件表还原） |
 | `bus_spawn` | 在指定工作区新建会话并把首条消息投进去；`spawn_key` 保证重试不会多建会话；v0.8 起可用 `preset` 指定 agent 预设（主会话用 `main-session`）、`role: main/dev` 一步注册角色、`module` 标模块归属、`force` 替换已有主会话 |
 | `bus_roles` | **v0.8 角色注册表**：`register` 把会话登记为 `main`（每工作区唯一）或 `dev`（可带 `module`）；`list` 查看谁是谁、是否在跑、是否可投递；`clear` 注销。登记后 `bus_send({ to: "main" })` 永远能找到协调者 |
@@ -404,12 +419,12 @@ Answer with the bus_send tool: bus_send({ to: "session-abc", message: "<your res
 
 ```powershell
 cd dsh-session-bus
-node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/find.test.mjs test/toolkit.test.mjs test/config.test.mjs test/threads.test.mjs test/plugin.test.mjs test/presentation.test.mjs test/leases.test.mjs test/coordination.test.mjs
+node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/find.test.mjs test/toolkit.test.mjs test/config.test.mjs test/threads.test.mjs test/plugin.test.mjs test/presentation.test.mjs test/leases.test.mjs test/coordination.test.mjs test/whenbusy.test.mjs
 ```
 
 （Node 24 下 `node --test test/` 会因目录解析报 `MODULE_NOT_FOUND`，所以逐个列出文件。）
 
-162 个用例，全部不依赖 DSH 运行时（v0.6 新增 `max_hops` / `closing` / `new_thread` / `inbox` / `kind` / 线程状态等用例；v0.7 新增写租约与结构化 `payload` / `attachments` 用例；v0.8 新增角色 / 任务 / 提问账本用例）：
+171 个用例，全部不依赖 DSH 运行时（v0.6 新增 `max_hops` / `closing` / `new_thread` / `inbox` / `kind` / 线程状态等用例；v0.7 新增写租约与结构化 `payload` / `attachments` 用例；v0.8 新增角色 / 任务 / 提问账本用例；v0.9 新增忙时派生 worker 用例）：
 
 - `test/envelope.test.mjs` —— 包头渲染/解析、多行正文、恶意输入；v0.6 的 `kind`/`closing` 元数据、
   收线信封省略回复指示、剩余跳数告警、queue 消息的"写入时间≠送达时间"提醒，以及 parse 往返；
@@ -441,6 +456,10 @@ node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/
   阻塞任务 / 回答后恢复 / 关闭后拒绝再答；以及 bus 层 `bus_roles` / `bus_task` / `bus_attention` 契约、
   `to: "main"` 路由（真实会话优先、无主会话报 `no_main`）、`bus_spawn` 的 `preset` / `role` / `module`
   与第二个 main 的拒绝。
+- `test/whenbusy.test.mjs` —— v0.9 忙时派生 worker：目标在跑 + `when_busy: "spawn"` 时新开一个
+  `dev-session` worker（注册为 `dev` + `worker: true`）、首条消息带派发者/原目标/回报方式与原任务、
+  原目标完全不被投递；目标空闲时照常直接投递；不带 `when_busy` 仍排队；`maxWorkers` 到上限回落 `queue`
+  并在 note 说明；`allowSpawn: false` 报 `spawn_disabled`。
 - `test/plugin.test.mjs` —— 用假宿主**完整挂载插件**并真的调用全部工具，同时断言
   工具返回值不包含未声明的字段（宿主会按 `additionalProperties: false` 严格校验工具输出）；
   并钉住 `persistState` 到构造选项 `persist` 的接线（关掉时一个账本字节都不落盘，默认仍写）。
