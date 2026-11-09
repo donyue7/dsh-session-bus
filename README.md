@@ -413,18 +413,18 @@ Answer with the bus_send tool: bus_send({ to: "session-abc", message: "<your res
   重启后同一 `thread` 的 `hop` 继续累加、`re=` 仍指向重启前那条消息；
   只有 `persistState: false` 时才退化为纯内存态（重启回到 0）。
 - **跨工作区投递会消耗目标会话的额度**：被唤醒的会话会真的开始一个回合，请把它当作“以用户身份发指令”。
-- `bus_read` 通过宿主 `inspect` 读取会话事件，超长会话的读取开销与历史长度相关（返回文本有上限）。
+- `bus_read` 通过宿主的会话事件页读取（DSH 0.2.2 起用 `sessionController.events`，旧版回退 `inspect`），超长会话的读取开销与历史长度相关（返回文本有上限）；宿主没有转录读取能力时返回 `note` 说明原因，而不是抛错。
 
 ## 开发与测试
 
 ```powershell
 cd dsh-session-bus
-node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/find.test.mjs test/toolkit.test.mjs test/config.test.mjs test/threads.test.mjs test/plugin.test.mjs test/presentation.test.mjs test/leases.test.mjs test/coordination.test.mjs test/whenbusy.test.mjs
+node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/find.test.mjs test/toolkit.test.mjs test/config.test.mjs test/threads.test.mjs test/plugin.test.mjs test/presentation.test.mjs test/leases.test.mjs test/coordination.test.mjs test/whenbusy.test.mjs test/read022.test.mjs
 ```
 
 （Node 24 下 `node --test test/` 会因目录解析报 `MODULE_NOT_FOUND`，所以逐个列出文件。）
 
-171 个用例，全部不依赖 DSH 运行时（v0.6 新增 `max_hops` / `closing` / `new_thread` / `inbox` / `kind` / 线程状态等用例；v0.7 新增写租约与结构化 `payload` / `attachments` 用例；v0.8 新增角色 / 任务 / 提问账本用例；v0.9 新增忙时派生 worker 用例）：
+177 个用例，全部不依赖 DSH 运行时（v0.6 新增 `max_hops` / `closing` / `new_thread` / `inbox` / `kind` / 线程状态等用例；v0.7 新增写租约与结构化 `payload` / `attachments` 用例；v0.8 新增角色 / 任务 / 提问账本用例；v0.9 新增忙时派生 worker 用例；v0.9.1 新增 DSH 0.2.2 转录读取兼容用例）：
 
 - `test/envelope.test.mjs` —— 包头渲染/解析、多行正文、恶意输入；v0.6 的 `kind`/`closing` 元数据、
   收线信封省略回复指示、剩余跳数告警、queue 消息的"写入时间≠送达时间"提醒，以及 parse 往返；
@@ -460,6 +460,9 @@ node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/
   `dev-session` worker（注册为 `dev` + `worker: true`）、首条消息带派发者/原目标/回报方式与原任务、
   原目标完全不被投递；目标空闲时照常直接投递；不带 `when_busy` 仍排队；`maxWorkers` 到上限回落 `queue`
   并在 note 说明；`allowSpawn: false` 报 `spawn_disabled`。
+- `test/read022.test.mjs` —— v0.9.1 兼容层：宿主只有 0.2.2 的 `sessionController.events`（无 `inspect`）时
+  `bus_read` 仍能读出标题与消息、`hasMore` 页标 `truncated`、完全没有转录读取能力时降级成 `note`
+  而不是抛错、只有旧版 `inspect` 时继续工作；`bus_spawn` 的复用探测同样走新接口。
 - `test/plugin.test.mjs` —— 用假宿主**完整挂载插件**并真的调用全部工具，同时断言
   工具返回值不包含未声明的字段（宿主会按 `additionalProperties: false` 严格校验工具输出）；
   并钉住 `persistState` 到构造选项 `persist` 的接线（关掉时一个账本字节都不落盘，默认仍写）。
