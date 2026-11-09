@@ -38,7 +38,7 @@ function createHost(options = {}) {
   }));
   const ctx = {
     logger: { info: () => {}, warn: () => {}, error: () => {} },
-    on: (name, handler) => { handlers.push(handler); return () => {}; },
+    on: (name, handler) => { Object.defineProperty(handler, 'eventName', { value: name }); handlers.push(handler); return () => {}; },
     get: (key) => (key === 'workspaceRegistry'
       ? { list: () => [{ id: 'ws-a', path: 'C:\\work\\a', title: 'A' }] }
       : undefined),
@@ -445,8 +445,9 @@ test('P1-3 a raised permission comes back when the delivered turn ends', async (
   assert.equal(bus.elevated.size, 1);
 
   // The Host reports the turn is over and the Session is idle.
-  assert.equal(host.handlers.length, 1);
-  host.handlers[0]({ id: PEER }, { type: 'turn/end' });
+  const turnEnd = host.handlers.filter((handler) => handler.eventName === 'session/event');
+  assert.equal(turnEnd.length, 1);
+  turnEnd[0]({ id: PEER }, { type: 'turn/end' });
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(host.presetOf.get(PEER), 'workspace-write');
   assert.equal(bus.elevated.size, 0);

@@ -24,6 +24,7 @@ DSH 会话总线插件：让**同一个工作区**或**不同工作区**的两�
   让读的人一眼看出"这不是我自己发的"（想还原成右侧气泡可设 `inboundPresentation: bubble`）。
 - **可回复**：被推送方看到 `[session-bus v1] from=<会话id>`，用 `bus_send` 把结果发回源会话，源会话同样被唤醒。
 - **按模块分工（v0.8）**：一个工作区可以有「一个主会话 + 每个模块一个开发会话」，用 `bus_roles` 登记角色、`bus_task` 记账、`bus_attention` 让开发会话一次只问用户一个具体问题——人仍然只和主会话对话。
+- **需求即任务（v1.0）**：一个需求 = 一个任务 = 一条 `task_id`。消息信封带上 `task=` / `task-title:` 并在整个线程内自动继承；开发会话每轮开始时会收到一张 `[session-bus task card]`（需求标题、状态、验收标准、红线、最后进展），还能按任务检索消息与线程——会话再多也不会搞混「这条消息属于哪个需求」。
 
 ## 安装
 
@@ -144,6 +145,7 @@ Node 按**解析后的真实路径**缓存 ES 模块，所以宿主只会执行�
     audit: true                 # 写审计日志
     listLimit: 40               # bus_list 默认行数
     findLimit: 5                 # bus_find 默认候选数
+    taskCards: true              # 每轮在第一条用户消息前注入当前任务卡（v1.0）
     targetPermission: delegate  # 被推送会话的权限（见下节）
     restorePermission: true      # 委派回合结束后还原目标权限
     spoolLongMessages: true      # 超长正文落盘为 body-file 而不是拒绝
@@ -267,6 +269,20 @@ v0.9 给 `bus_send` 加了 `when_busy`：
 - **约束**：`allowSpawn: false` 时直接拒绝（`spawn_disabled`）；目标空闲时不派生 worker，照常直接投递。
 - 回执新增 `whenBusy`、`worker: { sessionId, preset, module, title }`、`handedOffFrom: { sessionId, title }`。
 
+### 需求即任务（v1.0）
+
+会话一多，真正让人困惑的不是「谁在做什么」，而是「这条消息属于哪个需求」。v1.0 把需求提升为总线的一等对象：
+
+- **任务有验收标准**：`bus_task({ action: "create", title, acceptance: ["退款行出现", "审计日志写入"], constraints: ["未经批准不许发生产"] })`。`acceptance` 是用户判断「做完了」的标准，`constraints` 是红线；两者都会写进发给执行会话的任务卡。
+- **每条消息带 `task_id`**：`bus_send({ task_id, ... })` 把它写进信封（`task=` / `task-title:`），并粘在**线程**上——后续回复不重申也自动继承。没传时按「被回复消息 / 线程 → 发送方唯一的进行中任务」推断；推断不出来就留空，绝不乱猜。显式传不存在的任务会被拒绝（`task_not_found`）。
+- **任务卡注入（每轮第一步）**：会话开始新回合时，插件通过 `agent/pre-step` 在第一条用户消息前插入一张卡片：
+  - 开发会话：`[session-bus task card]` + 任务号/标题/状态 + **验收标准** + **约束红线** + 最后一次交流的摘要与来源；
+  - 主会话：自己名下所有进行中的需求一览（≤6 条，含负责人、最后活动时间、会话 id）。
+  卡片是真实注入的 `user` 角色消息（`source.kind = session-bus-task-card`），不是系统提示——模型每轮都看得到「当前需求是什么」。`taskCards: false` 可关闭。
+- **一个需求一个会话**：`bus_spawn({ task_id })` 把新会话绑定为该需求的归属会话（`assignee` / `sessionId` 写回任务），且默认 `spawn_key` 就是任务号——同一需求重复派生会复用同一个会话。
+- **按需求回顾**：`bus_read({ task })` 只读该需求的消息，`bus_find({ task })` 只在该需求碰过的会话里找，`bus_threads` 每行标出所属任务（`taskId` / `taskTitle` / `taskStatus`）。
+- 投递回执新增 `task: { taskId, title, status }`；审计记 `task`；`bus_task` 详情带 `acceptance` / `constraints` / `threadIds` / `last`。
+
 ### 权限：为什么推送会把目标会话提到调用方的等级
 
 DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh` 子进程起不来
@@ -310,14 +326,14 @@ DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh`
 | 工具 | 作用 |
 | --- | --- |
 | `bus_list` | 列出可达会话：`sessionId`、标题、工作目录、忙/闲、能否投递、**是否与你同工作目录**；支持 `offset` / `updated_within_minutes` / `active_only` |
-| `bus_find` | **按对话内容**找"该问谁"：检索全部工作区会话的全文，返回少数几个真正讨论过该话题的候选 + 命中片段 + 是否同目录 / 已有线程；只读，**不唤醒任何人**；结果带 `ambiguous` / `nextStep`，分不清时明确要求交给用户决定 |
+| `bus_find` | **按对话内容**找"该问谁"：检索全部工作区会话的全文，返回少数几个真正讨论过该话题的候选 + 命中片段 + 是否同目录 / 已有线程；只读，**不唤醒任何人**；结果带 `ambiguous` / `nextStep`，分不清时明确要求交给用户决定；**v1.0：`task` 把候选限定在该需求碰过的会话** |
 | `bus_send` | 把消息推入目标会话并唤醒它（`mode: queue` 排队 / `steer` 立即插入 / **`interrupt` 结论插队：目标在跑时插入当前回合，空闲时正常唤醒** / **`inbox` 静默投递不唤醒**；回答对方自己的消息、以及 `kind: "correction"` 的发送（v0.8.2 起，无需 `re=`）会自动升级为 `interrupt`，显式 `mode: queue` 可关闭单条升级）；默认以 `agent-message` source 投递，接收方看到左侧「收到任务消息」卡片（`inboundPresentation: bubble` 则退回右侧气泡）；可带 `thread` / `reply_to` / `write_scopes` / `elevate` / **`kind`** / **`max_hops`** / **`new_thread`** / **`closing`** / **`payload`** / **`attachments`** / **`when_busy`**（v0.9：忙时 `"spawn"` 另开 worker 会话而不是排队） |
-| `bus_read` | 读取目标会话最近的对话尾部（**不会**唤醒对方）；`since` 支持只取增量（可传**最近一条**入站信封上的 `msg=`，也可传 ISO 时间或毫秒时间戳；消息表裁剪后仍可由收件表还原） |
-| `bus_spawn` | 在指定工作区新建会话并把首条消息投进去；`spawn_key` 保证重试不会多建会话；v0.8 起可用 `preset` 指定 agent 预设（主会话用 `main-session`）、`role: main/dev` 一步注册角色、`module` 标模块归属、`force` 替换已有主会话 |
+| `bus_read` | 读取目标会话最近的对话尾部（**不会**唤醒对方）；`since` 支持只取增量（可传**最近一条**入站信封上的 `msg=`，也可传 ISO 时间或毫秒时间戳；消息表裁剪后仍可由收件表还原）；**v1.0：`task` 只读某个需求的消息** |
+| `bus_spawn` | 在指定工作区新建会话并把首条消息投进去；`spawn_key` 保证重试不会多建会话；v0.8 起可用 `preset` 指定 agent 预设（主会话用 `main-session`）、`role: main/dev` 一步注册角色、`module` 标模块归属、`force` 替换已有主会话；**v1.0：`task_id` 让新会话成为该需求的归属会话，默认 `spawn_key` = 任务号** |
 | `bus_roles` | **v0.8 角色注册表**：`register` 把会话登记为 `main`（每工作区唯一）或 `dev`（可带 `module`）；`list` 查看谁是谁、是否在跑、是否可投递；`clear` 注销。登记后 `bus_send({ to: "main" })` 永远能找到协调者 |
-| `bus_task` | **v0.8 任务账本**：`create` 开任务、`claim` 认领（→ `in_progress`）、`update` 报进度/`ready`（必须带 `evidence`）/`done`、`list` 看活动任务（`mine: true` 只看自己的）、`get` 看详情 |
+| `bus_task` | **v0.8 任务账本 / v1.0 需求**：`create` 开任务（可带 `acceptance` 验收标准 / `constraints` 红线 / `session_id`）、`claim` 认领（→ `in_progress`）、`update` 报进度/`ready`（必须带 `evidence`）/`done`、`list` 看活动任务（`mine: true` 只看自己的）、`get` 看详情（含验收标准、约束、线程、最后交流）；每个进行中任务每轮以任务卡出现在执行会话里 |
 | `bus_attention` | **v0.8 结构化提问**：`ask` 一次一个问题 + 有界 `options` + `recommendation`，自动转发给主会话转述用户；`answer` 记录用户决定并让被阻塞任务恢复；`list` / `cancel` |
-| `bus_threads` | 列出你的会话线程与各自"欠谁一条回复"，替代反复 `bus_read` 猜进度；v0.6 起还给出线程 `state`、`peerRunning`、最后一条的 `lastMessageState`（queued/consumed/unknown）、`lastKind`、`lastPreview`、`lastAgeMinutes` |
+| `bus_threads` | 列出你的会话线程与各自"欠谁一条回复"，替代反复 `bus_read` 猜进度；v0.6 起还给出线程 `state`、`peerRunning`、最后一条的 `lastMessageState`（queued/consumed/unknown）、`lastKind`、`lastPreview`、`lastAgeMinutes`；**v1.0：每行标出所属任务** |
 | `bus_lease` | 为共享目录里的文件/目录 claim 一把写租约（默认 30 分钟自动过期）；与别的 Session 重叠时返回冲突列表，提示先协商而不是硬写；`force` 只在用户明确要求时用 |
 | `bus_release` | 释放自己的写租约（指定 `lease` 或全部）；完成编辑后立刻释放，让下一个写者进入 |
 | `bus_leases` | 列出当前有效写租约：谁、在哪个工作区、占了哪些路径、还剩多少分钟、是否自己；过期租约不再阻塞别人 |
@@ -352,10 +368,11 @@ DSH 的 Windows 沙箱有一个已知缺陷：`workspace-write` 会话里 `pwsh`
 投递出去的消息是一条 `user` 角色消息（默认 source.kind = `agent-message`），首行是机器可解析的包头：
 
 ```
-[session-bus v1] from=session-abc hop=1/16 msg=1f0c9a2b re=9d3c11 thread=t-4a7b21c9
+[session-bus v1] from=session-abc hop=1/16 msg=1f0c9a2b re=9d3c11 thread=t-4a7b21c9 task=t-77aa10c3
 from-title: 修复解析器
 from-cwd: C:\work\project-a
 sent-at: 2026-10-16T05:10:04.000Z
+task-title: 修复解析器
 write-scopes: frontend/src/views, backend/app/services
 body-file: C:\Users\me\.dsh-harness-next\session-bus\spool\1f0c9a2b.md
 body-bytes: 41233
@@ -379,6 +396,7 @@ Answer with the bus_send tool: bus_send({ to: "session-abc", message: "<your res
   同方连续补充时它指向你自己上一条，会话锚点始终是 `thread=`。
   `bus_threads` 据此报出"谁欠谁一条回复"。包头新增字段均可选，
   **旧版本写的包头照样能解析**（`thread`/`re` 缺失即旧语义）。
+- **需求戳**：`task=<id>` 与 `task-title:` 标记这条消息属于哪个需求（v1.0）；同一线程内后续消息自动继承，缺这两个字段的旧包头照常解析。
 - **拒绝零副作用**：每类拒绝都有稳定错误码（`hop_budget_exhausted`、`message_too_long`、
   `self_send_disabled`、`cross_workspace_disabled`、`no_sender`、`empty_message`、`spawn_disabled`、
   `delivery_failed`、`invalid_since`），拒绝同样写审计（`event: "reject"`），
@@ -419,12 +437,12 @@ Answer with the bus_send tool: bus_send({ to: "session-abc", message: "<your res
 
 ```powershell
 cd dsh-session-bus
-node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/find.test.mjs test/toolkit.test.mjs test/config.test.mjs test/threads.test.mjs test/plugin.test.mjs test/presentation.test.mjs test/leases.test.mjs test/coordination.test.mjs test/whenbusy.test.mjs test/read022.test.mjs
+node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/find.test.mjs test/toolkit.test.mjs test/config.test.mjs test/threads.test.mjs test/plugin.test.mjs test/presentation.test.mjs test/leases.test.mjs test/coordination.test.mjs test/whenbusy.test.mjs test/read022.test.mjs test/task-v1.test.mjs
 ```
 
 （Node 24 下 `node --test test/` 会因目录解析报 `MODULE_NOT_FOUND`，所以逐个列出文件。）
 
-177 个用例，全部不依赖 DSH 运行时（v0.6 新增 `max_hops` / `closing` / `new_thread` / `inbox` / `kind` / 线程状态等用例；v0.7 新增写租约与结构化 `payload` / `attachments` 用例；v0.8 新增角色 / 任务 / 提问账本用例；v0.9 新增忙时派生 worker 用例；v0.9.1 新增 DSH 0.2.2 转录读取兼容用例）：
+193 个用例，全部不依赖 DSH 运行时（v1.0 新增任务层 / 信封任务戳 / 需求会话 / 按任务检索 / 任务卡注入用例；v0.6 新增 `max_hops` / `closing` / `new_thread` / `inbox` / `kind` / 线程状态等用例；v0.7 新增写租约与结构化 `payload` / `attachments` 用例；v0.8 新增角色 / 任务 / 提问账本用例；v0.9 新增忙时派生 worker 用例；v0.9.1 新增 DSH 0.2.2 转录读取兼容用例）：
 
 - `test/envelope.test.mjs` —— 包头渲染/解析、多行正文、恶意输入；v0.6 的 `kind`/`closing` 元数据、
   收线信封省略回复指示、剩余跳数告警、queue 消息的"写入时间≠送达时间"提醒，以及 parse 往返；
@@ -463,6 +481,10 @@ node --test test/envelope.test.mjs test/resolve.test.mjs test/bus.test.mjs test/
 - `test/read022.test.mjs` —— v0.9.1 兼容层：宿主只有 0.2.2 的 `sessionController.events`（无 `inspect`）时
   `bus_read` 仍能读出标题与消息、`hasMore` 页标 `truncated`、完全没有转录读取能力时降级成 `note`
   而不是抛错、只有旧版 `inspect` 时继续工作；`bus_spawn` 的复用探测同样走新接口。
+- `test/task-v1.test.mjs` —— v1.0 需求层：验收标准/约束的创建与替换、`bind`/`touch`、信封 `task=` 与线程继承、
+  发送方唯一进行中任务的自动识别（两条则不猜）、`task_not_found`、`bus_spawn` 绑定需求与默认 spawn_key 复用、
+  `bus_threads`/`bus_read`/`bus_find` 的任务过滤，以及 `agent/pre-step` 任务卡注入（无任务/非首步/已有卡片/
+  拒绝回合都不注入、开发卡带验收标准与红线、主会话卡列所属需求、`taskCards: false` 关闭）。
 - `test/plugin.test.mjs` —— 用假宿主**完整挂载插件**并真的调用全部工具，同时断言
   工具返回值不包含未声明的字段（宿主会按 `additionalProperties: false` 严格校验工具输出）；
   并钉住 `persistState` 到构造选项 `persist` 的接线（关掉时一个账本字节都不落盘，默认仍写）。
